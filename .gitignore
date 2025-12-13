@@ -1,0 +1,52 @@
+# .gitignore para Novel Reader
+
+# Arquivos Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Conteúdo das novels (não versionar)
+novels/*/capitulos/*.json
+novels/*/volumes/
+
+# Modelos de voz (podem ser grandes)
+narradores/*/
+vozes_personagens/*/
+
+# Configurações locais
+config/local_*.json
+.env
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Sistema operacional
+.DS_Store
+Thumbs.db

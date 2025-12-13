@@ -1,0 +1,13 @@
+{
+  "titulo": "A Jornada do Herói",
+  "autor": "Autor Exemplo",
+  "site_origem": "exemplo.com",
+  "url_original": "https://exemplo.com/novel/123",
+  "idioma": "pt-BR",
+  "generos": [
+    "Fantasia",
+    "Aventura"
+  ],
+  "status": "Exemplo",
+  "total_capitulos": 1
+}

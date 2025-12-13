@@ -1,0 +1,22 @@
+{
+  "sites_suportados": [
+    {
+      "nome": "site_exemplo",
+      "url_base": "https://exemplo.com",
+      "seletores": {
+        "titulo_novel": "",
+        "titulo_capitulo": "",
+        "conteudo_capitulo": "",
+        "numero_capitulo": "",
+        "proximo_capitulo": "",
+        "lista_capitulos": ""
+      },
+      "notas": "Configure os seletores CSS após análise do HTML"
+    }
+  ],
+  "configuracoes_gerais": {
+    "timeout_requisicao": 30,
+    "delay_entre_requisicoes": 2,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+  }
+}

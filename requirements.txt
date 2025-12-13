@@ -1,0 +1,20 @@
+# Novel Reader - Dependências 100% Gratuitas
+# Instale com: pip install -r requirements.txt
+
+# Web scraping
+requests>=2.32.0
+beautifulsoup4>=4.14.0
+lxml>=6.0.0
+
+# TTS e Áudio (Sistema Gratuito)
+gtts>=2.5.0           # Google TTS (grátis, ilimitado)
+pygame>=2.6.0         # Reprodução de áudio
+pydub>=0.25.0         # Manipulação de áudio (velocidade/volume)
+
+# Análise de texto
+regex>=2024.0.0
+
+# Utilidades
+python-dotenv>=1.0.0
+
+# REMOVIDO: elevenlabs (API paga - $5-22/mês, limitado)

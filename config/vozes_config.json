@@ -1,0 +1,57 @@
+{
+  "voz_narrador_padrao": {
+    "modelo": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\TTS_MS_PT-BR_MARIA_11.0",
+    "idioma": "pt-BR",
+    "velocidade": 1.0,
+    "pitch": 1.0,
+    "volume": 1.0
+  },
+  "vozes_disponiveis": [
+    {
+      "id": "voz_001",
+      "nome": "Narrador Principal",
+      "tipo": "narrador",
+      "modelo": "",
+      "notas": "Configure após instalar modelos TTS"
+    },
+    {
+      "id": "voz_002",
+      "nome": "Protagonista Masculino",
+      "tipo": "personagem",
+      "modelo": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\TTS_MS_EN-US_ZIRA_11.0",
+      "velocidade": 0.9,
+      "pitch": 0.9
+    },
+    {
+      "id": "voz_003",
+      "nome": "Heroína",
+      "tipo": "personagem",
+      "modelo": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\TTS_MS_PT-BR_MARIA_11.0",
+      "velocidade": 1.1,
+      "pitch": 1.2
+    }
+  ],
+  "mapeamento_personagens": {
+    "exemplo_personagem": {
+      "voz_id": "voz_001",
+      "configuracoes_especificas": {
+        "velocidade": 1.0,
+        "pitch": 1.0
+      }
+    },
+    "João": {
+      "voz_id": "voz_002",
+      "configuracoes_especificas": {
+        "velocidade": 1.0,
+        "pitch": 1.0
+      }
+    },
+    "Maria": {
+      "voz_id": "voz_003",
+      "configuracoes_especificas": {
+        "velocidade": 1.0,
+        "pitch": 1.0
+      }
+    }
+  }
+}
