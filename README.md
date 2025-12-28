@@ -13,26 +13,31 @@ Sistema avançado de leitura e narração de novels com interface gráfica moder
 
 ### 🎙️ Sistema de Narração Avançado
 - **TTS Neural de Alta Qualidade** usando Microsoft Edge (gratuito)
-- **5 Vozes em Português**: Francisca, Thalita, Antonio, Raquel, Duarte
+- **5 Vozes em Português**: Francisca, Thalita, Antonio, Donato, Brenda
 - **Controles de Velocidade Flexíveis**:
-  - 6 velocidades fixas: 0.5×, 1×, 1.25×, 1.5×, 2×, 3×
+  - 5 velocidades fixas: 0.5×, 1×, 1.25×, 1.5×, 2×
   - Barra de ajuste fino para controle preciso
 - **Pré-carregamento Inteligente** com cache LRU (10 parágrafos)
 - **Transições Instantâneas** entre parágrafos via sistema de fila dedicado
 - **Transição Automática** entre capítulos
 
 ### 🎵 Sistema de Áudio
-- **Música de Fundo Adaptativa** (Normal/Combate)
+- **Música de Fundo** com suporte a todos arquivos MP3/WAV/OGG
+- **Gerenciamento de Músicas** na tela de configurações
+- **Teste de Músicas** isolado antes de aplicar
 - **Controles Independentes** de volume para narração e música
 - **Ícones Dinâmicos** que mudam conforme níveis de volume
 - **Botão de Mute** para silenciar rapidamente
 
 ### 📖 Recursos de Leitura
+- **Modo de Leitura Imersivo** com capítulo completo e navegação por clique
+- **Estilização de Texto** com 4 paletas de cores e ajuste de tamanho (9-20pt)
 - **Navegação Fluida** entre capítulos e parágrafos
 - **Salvamento Automático** de progresso
 - **Restauração de Sessão** ao reabrir o programa
 - **Contador de Tempo** de narração em tempo real
 - **Estimativa de Tempo** restante por capítulo
+- **Controles Ocultos** com botão flutuante para visualização limpa
 - **100% Gratuito** - Sem necessidade de API keys
 
 ## 🚀 Instalação
@@ -86,6 +91,8 @@ python novel_reader_gui.py
 - **Transição Automática**: Ao terminar um capítulo, passa automaticamente para o próximo
 - **Salvamento de Progresso**: Posição salva automaticamente ao fechar
 - **Restauração de Sessão**: Retoma de onde parou ao reabrir
+- **Tela de Configurações**: Acesso a músicas, texto, aparência, perfil e novels
+- **Tema Tokyo Night Storm**: Design moderno com WCAG 2.1 compliance
 
 ## 📁 Estrutura do Projeto
 
@@ -152,11 +159,11 @@ lxml==5.3.0              # Parser XML/HTML
 
 | Nome | Voz Neural | Descrição |
 |------|------------|-----------|
-| Francisca | pt-BR-FranciscaNeural | Feminino BR - Calma (padrão) |
-| Thalita | pt-BR-ThalitaMultilingualNeural | Feminino BR - Multilíngue |
-| Antonio | pt-BR-AntonioNeural | Masculino BR |
-| Raquel | pt-PT-RaquelNeural | Feminino PT |
-| Duarte | pt-PT-DuarteNeural | Masculino PT |
+| Francisca | pt-BR-FranciscaNeural | Feminino BR - Calma e clara (padrão) |
+| Thalita | pt-BR-ThalitaNeural | Feminino BR - Jovem e vibrante |
+| Brenda | pt-BR-BrendaNeural | Feminino BR - Expressiva e dramática |
+| Antonio | pt-BR-AntonioNeural | Masculino BR - Natural e madura |
+| Donato | pt-BR-DonatoNeural | Masculino BR - Jovem e energética |
 
 ## ⚙️ Configurações Técnicas
 
@@ -183,8 +190,9 @@ ACCENT_WARNING = '#f9e2af'    # Amarelo (avisos)
 ## 🐛 Solução de Problemas
 
 ### Música não carregada
-- Verifique se existem arquivos `reading_*.mp3` e `combat_*.mp3` em `assets/audio/background/`
+- Verifique se existem arquivos de áudio em `assets/audio/background/`
 - Formatos suportados: MP3, WAV, OGG
+- Use "🔄 Atualizar Lista" na aba Músicas das configurações para recarregar
 
 ### Erro ao carregar capítulo
 - Confirme que o arquivo JSON existe em `novels/[nome]/capitulos/cap_XXXX.json`
