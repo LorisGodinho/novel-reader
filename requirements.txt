@@ -11,6 +11,13 @@ gtts>=2.5.0           # Google TTS (grátis, ilimitado)
 pygame>=2.6.0         # Reprodução de áudio
 pydub>=0.25.0         # Manipulação de áudio (velocidade/volume)
 
+# Download de BGM
+yt-dlp>=2025.12.8     # Download de vídeos/áudio do YouTube
+
+# Criação de áudio sintético
+numpy>=2.0.0          # Processamento numérico
+scipy>=1.15.0         # Processamento de sinais de áudio
+
 # Análise de texto
 regex>=2024.0.0
 

@@ -1,0 +1,221 @@
+@startuml Diagrama de Componentes - Novel Reader
+
+title Novel Reader - Arquitetura de Componentes
+
+skinparam componentStyle rectangle
+
+' ============================================
+' CAMADA DE APRESENTAÇÃO
+' ============================================
+package "Apresentação" {
+    component [NovelReaderGUI] as GUI #LightBlue {
+        portin " " as GUI_IN
+        portout " " as GUI_OUT
+    }
+    
+    component [TemaEscuro] as Tema #LightBlue
+    component [Tooltips] as Tooltips #LightBlue
+    
+    GUI ..> Tema : aplica
+    GUI ..> Tooltips : cria
+}
+
+' ============================================
+' CAMADA DE CONTROLE
+' ============================================
+package "Controle" {
+    component [EventLoop] as Loop #Yellow
+    component [GerenciadorEstado] as Estado #Yellow
+    
+    Loop --> Estado : atualiza
+}
+
+' ============================================
+' CAMADA DE NEGÓCIO
+' ============================================
+package "Negócio" {
+    component [LeitorNovel] as Leitor #LightGreen {
+        portin " " as LEITOR_IN
+        portout " " as LEITOR_OUT
+    }
+    
+    component [ProcessadorEmocoes] as Emocoes #LightGreen
+    component [GerenciadorVozes] as Vozes #LightGreen
+    component [WikiPersonagens] as Wiki #LightGreen
+    
+    Leitor ..> Vozes : consulta
+    Leitor ..> Wiki : consulta
+}
+
+' ============================================
+' CAMADA DE SERVIÇOS
+' ============================================
+package "Serviços" {
+    component [EngineNarracaoSimples] as Engine #Orange {
+        portin " " as ENGINE_IN
+        portout " " as ENGINE_OUT
+        
+        component [CacheLRU] as Cache #LightYellow
+        component [ThreadWorker] as Worker #LightYellow
+        component [FilaPrecarregamento] as Fila #LightYellow
+    }
+    
+    component [MusicaFundo] as Musica #Orange
+    component [ExtratorCentralNovel] as Extrator #Orange
+    
+    Engine *-- Cache
+    Engine *-- Worker
+    Engine *-- Fila
+}
+
+' ============================================
+' CAMADA DE INFRAESTRUTURA
+' ============================================
+package "Infraestrutura" {
+    component [EdgeTTS] as TTS #Pink
+    component [Pygame] as Audio #Pink
+    component [Tkinter] as TK #Pink
+    component [AsyncIO] as Async #Pink
+    component [Threading] as Thread #Pink
+    component [Requests] as HTTP #Pink
+}
+
+' ============================================
+' CAMADA DE DADOS
+' ============================================
+package "Dados" {
+    database "novels/" as NovelsDB {
+        folder "martial_world" {
+            file "metadata.json" as Meta
+            folder "capitulos" {
+                file "cap_0001.json" as Cap1
+                file "cap_0002.json" as Cap2
+                file "..." as CapN
+            }
+        }
+    }
+    
+    database "config/" as ConfigDB {
+        file "progresso.json" as Progresso
+        file "vozes_config.json" as VozesConfig
+        file "sites_config.json" as SitesConfig
+    }
+    
+    database "assets/" as AssetsDB {
+        folder "audio" {
+            folder "background" {
+                file "normal.mp3" as MusicaNormal
+                file "combate.mp3" as MusicaCombate
+            }
+        }
+    }
+    
+    database "temp/" as TempDB {
+        file "audio_*.mp3" as TempAudio
+    }
+}
+
+' ============================================
+' RELACIONAMENTOS ENTRE CAMADAS
+' ============================================
+
+' Apresentação <-> Controle
+GUI --> Loop : eventos
+Loop --> GUI : comandos
+
+' Controle <-> Negócio
+Estado --> Leitor : carrega capítulo
+Leitor --> Estado : retorna dados
+
+' Negócio <-> Serviços
+GUI --> Engine : narrar()
+GUI --> Musica : controlar()
+Emocoes --> Engine : configuração
+
+' Serviços <-> Infraestrutura
+Engine --> TTS : gerar áudio
+Engine --> Audio : reproduzir
+Engine --> Async : async/await
+Engine --> Thread : threading
+Musica --> Audio : canais
+Extrator --> HTTP : requisições
+GUI --> TK : widgets
+
+' Negócio <-> Dados
+Leitor --> NovelsDB : lê
+Leitor --> ConfigDB : lê/escreve
+Engine --> TempDB : cache temporário
+Musica --> AssetsDB : carrega MP3
+
+' ============================================
+' INTERFACES PRINCIPAIS
+' ============================================
+
+interface "INarracao" as INarracao
+interface "ILeitor" as ILeitor
+interface "IExtrator" as IExtrator
+
+Engine .up.|> INarracao
+Leitor .up.|> ILeitor
+Extrator .up.|> IExtrator
+
+' ============================================
+' NOTAS E DOCUMENTAÇÃO
+' ============================================
+
+note right of Engine
+  **Engine de Narração**
+  - Cache LRU: 10 parágrafos
+  - Thread worker dedicado
+  - Fila para pré-carregamento
+  - Transição: < 100ms
+end note
+
+note right of Cache
+  **OrderedDict**
+  Máx 10 itens
+  ~50MB memória
+end note
+
+note right of Worker
+  **Thread Daemon**
+  Pré-carrega parágrafos
+  Não bloqueia GUI
+end note
+
+note bottom of NovelsDB
+  **Formato JSON**
+  Estrutura padronizada
+  Capítulos independentes
+end note
+
+note bottom of TempDB
+  **Arquivos Temporários**
+  Gerados pelo Edge TTS
+  Limpeza automática
+end note
+
+note top of GUI
+  **Interface Tkinter**
+  1100x800 (default)
+  1000x700 (mínimo)
+  Tema: Catppuccin Mocha
+end note
+
+' ============================================
+' FLUXO DE DADOS PRINCIPAL
+' ============================================
+
+note as FluxoPrincipal
+  **Fluxo Principal de Narração:**
+  1. GUI recebe clique do usuário
+  2. Loop processa evento
+  3. Estado atualiza variáveis
+  4. Leitor carrega capítulo do JSON
+  5. Engine gera/recupera áudio do cache
+  6. Pygame reproduz áudio
+  7. GUI atualiza display
+  8. Worker pré-carrega próximo
+end note
+
+@enduml

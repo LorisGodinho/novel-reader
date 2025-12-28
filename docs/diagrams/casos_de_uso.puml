@@ -1,0 +1,145 @@
+@startuml Casos de Uso - Novel Reader
+
+title Novel Reader - Diagrama de Casos de Uso
+
+left to right direction
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+
+' Definição dos atores
+actor "Leitor\nPrincipal" as Leitor #LightBlue
+actor "Admin de\nConteúdo" as Admin #LightGreen
+actor "Sistema" as Sistema #LightGray
+
+' Pacote principal
+package "Novel Reader" {
+    
+    ' Casos de uso do Leitor
+    usecase UC01 as "UC01\nIniciar Narração"
+    usecase UC02 as "UC02\nControlar Playback"
+    usecase UC02_1 as "UC02.1\nPausar"
+    usecase UC02_2 as "UC02.2\nRetomar"
+    usecase UC02_3 as "UC02.3\nParar"
+    
+    usecase UC03 as "UC03\nAjustar Velocidade"
+    usecase UC03_1 as "UC03.1\nBotões Fixos"
+    usecase UC03_2 as "UC03.2\nSlider Fino"
+    
+    usecase UC04 as "UC04\nControlar Volume"
+    usecase UC04_1 as "UC04.1\nVolume Narração"
+    usecase UC04_2 as "UC04.2\nVolume Música"
+    usecase UC04_3 as "UC04.3\nMutar Música"
+    
+    usecase UC05 as "UC05\nNavegar Parágrafos"
+    usecase UC05_1 as "UC05.1\nParágrafo Anterior"
+    usecase UC05_2 as "UC05.2\nPróximo Parágrafo"
+    
+    usecase UC06 as "UC06\nNavegar Capítulos"
+    usecase UC06_1 as "UC06.1\nCapítulo Anterior"
+    usecase UC06_2 as "UC06.2\nPróximo Capítulo (Manual)"
+    usecase UC06_3 as "UC06.3\nPróximo Capítulo (Auto)"
+    usecase UC06_4 as "UC06.4\nSelecionar Específico"
+    
+    usecase UC07 as "UC07\nGerenciar Música\nde Fundo"
+    usecase UC07_1 as "UC07.1\nMúsica Ambiente"
+    usecase UC07_2 as "UC07.2\nMúsica Combate"
+    
+    ' Casos de uso do Admin
+    usecase UC08 as "UC08\nExtrair Novel\nde Site"
+    usecase UC08_1 as "UC08.1\nCentralNovel"
+    usecase UC08_2 as "UC08.2\nGenérico"
+    
+    usecase UC11 as "UC11\nGerenciar Vozes\nde Personagens"
+    usecase UC11_1 as "UC11.1\nDetectar Diálogos"
+    usecase UC11_2 as "UC11.2\nVoz Narrador"
+    
+    ' Casos de uso do Sistema
+    usecase UC09 as "UC09\nSalvar/Restaurar\nProgresso"
+    usecase UC09_1 as "UC09.1\nSalvamento\nAutomático"
+    usecase UC09_2 as "UC09.2\nRestauração"
+    usecase UC09_3 as "UC09.3\nSalvar ao Fechar"
+    
+    usecase UC10 as "UC10\nProcessar\nEmoções"
+    usecase UC10_1 as "UC10.1\nDetecção Manual"
+    usecase UC10_2 as "UC10.2\nDetecção Auto"
+    
+    usecase UC13 as "UC13\nOtimizar com\nCache"
+    usecase UC13_1 as "UC13.1\nCache Hit"
+    usecase UC13_2 as "UC13.2\nCache Miss"
+}
+
+' Relacionamentos do Leitor
+Leitor --> UC01
+Leitor --> UC02
+Leitor --> UC03
+Leitor --> UC04
+Leitor --> UC05
+Leitor --> UC06
+Leitor --> UC07
+
+' Relacionamentos do Admin
+Admin --> UC08
+Admin --> UC11
+
+' Relacionamentos do Sistema
+Sistema --> UC09
+Sistema --> UC10
+Sistema --> UC13
+
+' Extends e Includes
+UC02 .> UC02_1 : <<extend>>
+UC02 .> UC02_2 : <<extend>>
+UC02 .> UC02_3 : <<extend>>
+
+UC03 .> UC03_1 : <<extend>>
+UC03 .> UC03_2 : <<extend>>
+
+UC04 .> UC04_1 : <<extend>>
+UC04 .> UC04_2 : <<extend>>
+UC04 .> UC04_3 : <<extend>>
+
+UC05 .> UC05_1 : <<extend>>
+UC05 .> UC05_2 : <<extend>>
+
+UC06 .> UC06_1 : <<extend>>
+UC06 .> UC06_2 : <<extend>>
+UC06 .> UC06_3 : <<extend>>
+UC06 .> UC06_4 : <<extend>>
+
+UC07 .> UC07_1 : <<extend>>
+UC07 .> UC07_2 : <<extend>>
+
+UC08 .> UC08_1 : <<extend>>
+UC08 .> UC08_2 : <<extend>>
+
+UC11 .> UC11_1 : <<extend>>
+UC11 .> UC11_2 : <<extend>>
+
+UC09 .> UC09_1 : <<extend>>
+UC09 .> UC09_2 : <<extend>>
+UC09 .> UC09_3 : <<extend>>
+
+UC10 .> UC10_1 : <<extend>>
+UC10 .> UC10_2 : <<extend>>
+
+UC13 .> UC13_1 : <<extend>>
+UC13 .> UC13_2 : <<extend>>
+
+' Includes importantes
+UC01 ..> UC09 : <<include>>
+UC01 ..> UC13 : <<include>>
+UC01 ..> UC10 : <<include>>
+UC02 ..> UC01 : <<extend>>
+UC05 ..> UC06 : <<extend>>
+
+note right of UC01
+  Caso de uso principal
+  Tempo de início: < 2s
+end note
+
+note right of UC13
+  Performance crítica
+  Transição: < 100ms
+end note
+
+@enduml

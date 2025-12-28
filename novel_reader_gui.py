@@ -139,21 +139,37 @@ class TemaEscuro:
             borderwidth=0,
             padding=(10, 5))
         
-        # Combobox
+        # Combobox - Estilo moderno e responsivo
         style.map('TCombobox', 
-            fieldbackground=[('readonly', TemaEscuro.BG_SECUNDARIO)],
-            selectbackground=[('readonly', TemaEscuro.BG_SECUNDARIO)],
+            fieldbackground=[('readonly', TemaEscuro.BG_TERCIARIO)],
+            selectbackground=[('readonly', TemaEscuro.BG_TERCIARIO)],
             foreground=[('readonly', TemaEscuro.TEXT_PRIMARY)])
         
         style.configure('TCombobox',
-            background=TemaEscuro.BG_SECUNDARIO,
+            background=TemaEscuro.BG_TERCIARIO,
             foreground=TemaEscuro.TEXT_PRIMARY,
-            fieldbackground=TemaEscuro.BG_SECUNDARIO,
-            selectbackground=TemaEscuro.ACCENT_PRIMARY,
-            selectforeground=TemaEscuro.TEXT_PRIMARY,
             bordercolor=TemaEscuro.BORDER,
-            arrowcolor=TemaEscuro.TEXT_PRIMARY,
-            insertcolor=TemaEscuro.TEXT_PRIMARY)
+            arrowcolor=TemaEscuro.ACCENT_PRIMARY,
+            relief='flat',
+            borderwidth=2,
+            padding=8)
+        
+        # Combobox grande e moderna - para seleção de BGMs
+        style.configure('BGM.TCombobox',
+            background=TemaEscuro.BG_TERCIARIO,
+            foreground=TemaEscuro.TEXT_PRIMARY,
+            fieldbackground=TemaEscuro.BG_TERCIARIO,
+            bordercolor=TemaEscuro.ACCENT_PRIMARY,
+            arrowcolor=TemaEscuro.ACCENT_PRIMARY,
+            relief='flat',
+            borderwidth=2,
+            padding=10,
+            font=('Segoe UI', 10, 'bold'))
+        
+        style.map('BGM.TCombobox',
+            fieldbackground=[('readonly', TemaEscuro.BG_TERCIARIO), ('hover', TemaEscuro.BG_HOVER)],
+            bordercolor=[('focus', TemaEscuro.ACCENT_PRIMARY), ('hover', TemaEscuro.ACCENT_SECONDARY)],
+            foreground=[('readonly', TemaEscuro.TEXT_PRIMARY)])
         
         # Spinbox
         style.configure('TSpinbox',
@@ -191,68 +207,106 @@ class MusicaFundo:
         self.canal_musica = pygame.mixer.Channel(0)
         self.canal_narrador = pygame.mixer.Channel(1)
         
-        self.musica_normal = None
-        self.musica_combate = None
+        # Dicionários para armazenar todas as BGMs
+        self.bgms_leitura = {}  # {nome_arquivo: pygame.Sound}
+        self.bgms_combate = {}  # {nome_arquivo: pygame.Sound}
+        
+        # BGMs selecionadas atualmente
+        self.bgm_leitura_atual = None
+        self.bgm_combate_atual = None
+        
         self.som_atual = None
         self.modo_atual = None
         self.volume_musica = 0.3
         self.mutado = False
         
     def carregar_musicas(self):
-        """Carrega as músicas de fundo."""
+        """Carrega todas as músicas de fundo disponíveis."""
         base_path = os.path.join(obter_caminho_base(), 'assets', 'audio', 'background')
         
-        normal_paths = [
-            os.path.join(base_path, 'ambient.mp3'),
-            os.path.join(base_path, 'ambient_test.wav')
-        ]
-        combate_paths = [
-            os.path.join(base_path, 'combat.mp3'),
-            os.path.join(base_path, 'combat_test.wav')
-        ]
-        
         try:
-            for path in normal_paths:
-                if os.path.exists(path):
-                    self.musica_normal = pygame.mixer.Sound(path)
-                    print(f"✓ Música normal carregada: {os.path.basename(path)}")
-                    break
+            if os.path.exists(base_path):
+                arquivos = os.listdir(base_path)
+                
+                # Carregar TODAS as BGMs de leitura (bgm_u_*)
+                bgms_leitura = [f for f in arquivos if f.startswith('bgm_u_') and f.endswith('.mp3')]
+                for bgm in bgms_leitura:
+                    path = os.path.join(base_path, bgm)
+                    self.bgms_leitura[bgm] = pygame.mixer.Sound(path)
+                    print(f"✓ BGM Leitura carregada: {bgm}")
+                
+                # Selecionar primeira como padrão
+                if self.bgms_leitura:
+                    self.bgm_leitura_atual = list(self.bgms_leitura.keys())[0]
+                else:
+                    print(f"⚠️ Nenhuma BGM de leitura encontrada (bgm_u_*.mp3)")
+                
+                # Carregar TODAS as BGMs de combate
+                bgms_combate = [f for f in arquivos if f.startswith('combat_') and f.endswith('.mp3')]
+                for bgm in bgms_combate:
+                    path = os.path.join(base_path, bgm)
+                    self.bgms_combate[bgm] = pygame.mixer.Sound(path)
+                    print(f"✓ BGM Combate carregada: {bgm}")
+                
+                # Selecionar primeira como padrão
+                if self.bgms_combate:
+                    self.bgm_combate_atual = list(self.bgms_combate.keys())[0]
+                else:
+                    print(f"⚠️ Nenhuma BGM de combate encontrada (combat_*.mp3)")
             else:
-                print(f"⚠️ Música normal não encontrada")
-        
-            for path in combate_paths:
-                if os.path.exists(path):
-                    self.musica_combate = pygame.mixer.Sound(path)
-                    print(f"✓ Música combate carregada: {os.path.basename(path)}")
-                    break
-            else:
-                print(f"⚠️ Música combate não encontrada")
+                print(f"⚠️ Pasta de BGMs não encontrada: {base_path}")
         except Exception as e:
             print(f"❌ Erro ao carregar músicas: {e}")
     
+    def obter_listas_bgms(self):
+        """Retorna listas de nomes de BGMs para os comboboxes."""
+        return list(self.bgms_leitura.keys()), list(self.bgms_combate.keys())
+    
+    def selecionar_bgm_leitura(self, nome_arquivo):
+        """Seleciona uma BGM de leitura específica."""
+        if nome_arquivo in self.bgms_leitura:
+            self.bgm_leitura_atual = nome_arquivo
+            print(f"🎵 BGM Leitura selecionada: {nome_arquivo}")
+            # Se estiver tocando música normal, troca automaticamente
+            if self.modo_atual == 'normal':
+                self.tocar_normal()
+        else:
+            print(f"❌ BGM não encontrada: {nome_arquivo}")
+    
+    def selecionar_bgm_combate(self, nome_arquivo):
+        """Seleciona uma BGM de combate específica."""
+        if nome_arquivo in self.bgms_combate:
+            self.bgm_combate_atual = nome_arquivo
+            print(f"⚔️ BGM Combate selecionada: {nome_arquivo}")
+            # Se estiver tocando música de combate, troca automaticamente
+            if self.modo_atual == 'combate':
+                self.tocar_combate()
+        else:
+            print(f"❌ BGM não encontrada: {nome_arquivo}")
+    
     def tocar_normal(self):
-        """Toca música ambiente normal."""
-        if self.musica_normal:
+        """Toca música ambiente normal (leitura)."""
+        if self.bgm_leitura_atual and self.bgm_leitura_atual in self.bgms_leitura:
             self.canal_musica.stop()
-            self.som_atual = self.musica_normal
+            self.som_atual = self.bgms_leitura[self.bgm_leitura_atual]
             self.som_atual.set_volume(0 if self.mutado else self.volume_musica)
             self.canal_musica.play(self.som_atual, loops=-1)
             self.modo_atual = 'normal'
-            print(f"▶️ Tocando música normal (volume: {self.volume_musica:.2f})")
+            print(f"▶️ Tocando: {self.bgm_leitura_atual} (volume: {self.volume_musica:.2f})")
         else:
-            print("❌ Música normal não disponível")
+            print("❌ Música de leitura não disponível")
     
     def tocar_combate(self):
         """Toca música de combate."""
-        if self.musica_combate:
+        if self.bgm_combate_atual and self.bgm_combate_atual in self.bgms_combate:
             self.canal_musica.stop()
-            self.som_atual = self.musica_combate
+            self.som_atual = self.bgms_combate[self.bgm_combate_atual]
             self.som_atual.set_volume(0 if self.mutado else self.volume_musica)
             self.canal_musica.play(self.som_atual, loops=-1)
             self.modo_atual = 'combate'
-            print(f"▶️ Tocando música combate (volume: {self.volume_musica:.2f})")
+            print(f"▶️ Tocando: {self.bgm_combate_atual} (volume: {self.volume_musica:.2f})")
         else:
-            print("❌ Música combate não disponível")
+            print("❌ Música de combate não disponível")
     
     def mutar(self, mutar=True):
         """Muta/desmuta música."""
@@ -480,6 +534,7 @@ class NovelReaderGUI:
         self.carregar_capitulos()
         self.carregar_progresso()
         self.musica.carregar_musicas()
+        self.inicializar_comboboxes_bgm()
         
         # Bind de foco e redimensionamento
         self.root.bind('<FocusIn>', self.on_focus)
@@ -744,18 +799,40 @@ class NovelReaderGUI:
         
         ttk.Label(musica_frame, text="🎼", font=('Segoe UI', 10)).pack(side='left', padx=(0, 5))
         
+        # Botão música normal
         ttk.Button(musica_frame, text="🎵", command=self.musica_normal,
-                  width=3).pack(side='left', padx=1)
-        ttk.Button(musica_frame, text="⚔️", command=self.musica_combate,
-                  width=3).pack(side='left', padx=1)
-        self.btn_mutar = ttk.Button(musica_frame, text="🔇",
-                                    command=self.toggle_mutar, width=3)
-        self.btn_mutar.pack(side='left', padx=1)
+                  width=4, style='Accent.TButton').pack(side='left', padx=(0, 8))
+        ttk.Label(musica_frame, text="Leitura:", 
+                 font=('Segoe UI', 10, 'bold'),
+                 foreground=TemaEscuro.ACCENT_PRIMARY).pack(side='left', padx=(0, 5))
         
-        # Labels de texto para os botões
-        ttk.Label(musica_frame, text="Normal", font=('Segoe UI', 8)).pack(side='left', padx=(5, 3))
-        ttk.Label(musica_frame, text="Combate", font=('Segoe UI', 8)).pack(side='left', padx=3)
-        ttk.Label(musica_frame, text="Mutar", font=('Segoe UI', 8)).pack(side='left', padx=3)
+        # Combobox BGM Leitura - Maior e mais moderna
+        self.combo_bgm_leitura = ttk.Combobox(musica_frame, values=[], 
+                                              state='readonly', width=28,
+                                              style='BGM.TCombobox')
+        self.combo_bgm_leitura.pack(side='left', padx=(0, 15))
+        self.combo_bgm_leitura.bind('<<ComboboxSelected>>', self.on_bgm_leitura_selecionada)
+        
+        # Botão música combate
+        ttk.Button(musica_frame, text="⚔️", command=self.musica_combate,
+                  width=4, style='Accent.TButton').pack(side='left', padx=(0, 8))
+        ttk.Label(musica_frame, text="Combate:", 
+                 font=('Segoe UI', 10, 'bold'),
+                 foreground=TemaEscuro.ACCENT_DANGER).pack(side='left', padx=(0, 5))
+        
+        # Combobox BGM Combate - Maior e mais moderna
+        self.combo_bgm_combate = ttk.Combobox(musica_frame, values=[], 
+                                              state='readonly', width=28,
+                                              style='BGM.TCombobox')
+        self.combo_bgm_combate.pack(side='left', padx=(0, 15))
+        self.combo_bgm_combate.bind('<<ComboboxSelected>>', self.on_bgm_combate_selecionada)
+        
+        # Botão mutar
+        self.btn_mutar = ttk.Button(musica_frame, text="🔇",
+                                    command=self.toggle_mutar, width=4)
+        self.btn_mutar.pack(side='left', padx=(0, 5))
+        ttk.Label(musica_frame, text="Mutar", 
+                 font=('Segoe UI', 9)).pack(side='left', padx=0)
     
     def criar_area_visualizacao(self, parent):
         """Cria área de visualização do texto com highlight."""
@@ -1314,6 +1391,30 @@ class NovelReaderGUI:
         except Exception as e:
             print(f"Erro ao salvar progresso: {e}")
             return False
+    
+    def inicializar_comboboxes_bgm(self):
+        """Inicializa os comboboxes com as BGMs disponíveis."""
+        leitura, combate = self.musica.obter_listas_bgms()
+        
+        # Configurar combobox de leitura
+        if leitura:
+            self.combo_bgm_leitura['values'] = leitura
+            self.combo_bgm_leitura.set(leitura[0])
+        
+        # Configurar combobox de combate
+        if combate:
+            self.combo_bgm_combate['values'] = combate
+            self.combo_bgm_combate.set(combate[0])
+    
+    def on_bgm_leitura_selecionada(self, event=None):
+        """Callback quando usuário seleciona uma BGM de leitura."""
+        bgm_selecionada = self.combo_bgm_leitura.get()
+        self.musica.selecionar_bgm_leitura(bgm_selecionada)
+    
+    def on_bgm_combate_selecionada(self, event=None):
+        """Callback quando usuário seleciona uma BGM de combate."""
+        bgm_selecionada = self.combo_bgm_combate.get()
+        self.musica.selecionar_bgm_combate(bgm_selecionada)
     
     def sair(self):
         """Salva progresso e fecha aplicação."""

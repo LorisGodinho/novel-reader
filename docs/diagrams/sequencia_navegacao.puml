@@ -1,0 +1,127 @@
+@startuml Diagrama de Sequência - Navegação Entre Parágrafos
+
+title Novel Reader - Sequência: Navegação Rápida
+
+actor "Leitor" as Usuario
+participant "NovelReaderGUI" as GUI
+participant "EngineNarracaoSimples" as Engine
+participant "Cache LRU" as Cache
+participant "Edge TTS" as TTS
+database "Progresso" as DB
+
+== Navegação com Cache Hit ==
+Usuario -> GUI : Clica "Próximo Parágrafo"
+activate GUI
+
+GUI -> Engine : parar()
+activate Engine
+Engine -> Engine : canal.stop()
+Engine --> GUI : OK
+deactivate Engine
+
+GUI -> GUI : paragrafo_atual += 1
+GUI -> GUI : texto = conteudo_capitulo[paragrafo_atual]
+
+GUI -> Engine : narrar(texto, callback)
+activate Engine
+Engine -> Cache : Verificar cache_sounds[hash(texto)]
+Cache --> Engine : Som encontrado (Hit)
+note right
+  **Cache Hit!**
+  Tempo de transição: ~50ms
+end note
+
+Engine -> Engine : som_atual = cache_sounds[hash]
+Engine -> Engine : canal.play(som_atual)
+Engine --> GUI : Reproduzindo
+deactivate Engine
+
+GUI -> GUI : atualizar_display(texto)
+GUI -> GUI : atualizar_status()
+Usuario <-- GUI : Transição instantânea
+deactivate GUI
+
+== Navegação com Cache Miss ==
+Usuario -> GUI : Voltar para Parágrafo 1\n(fora do cache)
+activate GUI
+
+GUI -> Engine : parar()
+GUI -> GUI : paragrafo_atual = 1
+GUI -> GUI : texto = conteudo_capitulo[1]
+
+GUI -> Engine : narrar(texto, callback)
+activate Engine
+Engine -> Cache : Verificar cache_sounds[hash(texto)]
+Cache --> Engine : Som NÃO encontrado (Miss)
+note right
+  **Cache Miss!**
+  Geração sob demanda
+end note
+
+Engine -> TTS : Communicate.create(texto)
+activate TTS
+note right
+  Aguardando geração...
+  Tempo: ~500-1500ms
+end note
+TTS --> Engine : audio_data (MP3)
+deactivate TTS
+
+Engine -> Engine : Salvar temp_file
+Engine -> Engine : pygame.mixer.Sound(temp_file)
+Engine -> Cache : Adicionar ao cache_sounds
+note right
+  Se cache cheio (10 itens),
+  remove mais antigo (LRU)
+end note
+
+Engine -> Engine : canal.play(som_atual)
+Engine --> GUI : Reproduzindo
+deactivate Engine
+
+GUI -> GUI : atualizar_display(texto)
+Usuario <-- GUI : Pequeno delay perceptível
+deactivate GUI
+
+== Pré-carregamento Proativo ==
+GUI -> GUI : precarregar_proximo_paragrafo()
+activate GUI
+
+GUI -> Engine : solicitar_precarregamento(proximo_texto)
+activate Engine
+Engine -> Engine : fila_precarregamento.put(proximo_texto)
+note right
+  Thread worker em background
+  processa a fila continuamente
+end note
+
+Engine --> GUI : Requisição enfileirada
+deactivate Engine
+deactivate GUI
+
+... Thread Worker Processa ...
+
+Engine -> Engine : _worker_precarregamento()
+activate Engine
+Engine -> Engine : texto = fila_precarregamento.get()
+Engine -> Cache : Verificar se já existe
+alt Não existe no cache
+    Engine -> TTS : Gerar áudio
+    TTS --> Engine : audio_data
+    Engine -> Engine : Salvar e carregar Sound
+    Engine -> Cache : Adicionar ao cache
+end
+deactivate Engine
+
+== Salvamento Automático ==
+GUI -> GUI : salvar_progresso()
+activate GUI
+GUI -> DB : Escrever JSON
+note right
+  Salvamento assíncrono
+  Não bloqueia interface
+end note
+DB --> GUI : OK
+deactivate GUI
+
+@enduml
