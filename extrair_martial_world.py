@@ -1,5 +1,5 @@
 """
-Script para extrair Martial World do Central Novel
+Script para extrair Martial World do site de novels
 Uso: python extrair_martial_world.py [numero_capitulo_inicial] [numero_capitulo_final]
 """
 

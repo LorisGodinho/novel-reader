@@ -108,7 +108,7 @@ novel_reader/
 │   ├── gerenciador_vozes.py
 │   └── wiki_personagens.py
 ├── extratores/                # Extratores de sites
-│   ├── centralnovel.py       # Extrator para CentralNovel
+│   ├── centralnovel.py       # Extrator para site de novels
 │   └── template_generico.py
 ├── novels/                    # Novels armazenadas
 │   └── martial_world/
@@ -117,13 +117,13 @@ novel_reader/
 └── assets/                    # Assets (áudio, etc)
     └── audio/
         └── background/
-            ├── ambient.mp3   # Música ambiente
-            └── combat.mp3    # Música de combate
+            ├── reading_*.mp3  # BGMs para leitura
+            └── combat_*.mp3   # BGMs para combate
 ```
 
 ## 🔧 Extração de Capítulos
 
-### Extrair de CentralNovel
+### Extrair de Site de Novels
 
 ```python
 from extratores.centralnovel import ExtratorCentralNovel
@@ -183,7 +183,7 @@ ACCENT_WARNING = '#f9e2af'    # Amarelo (avisos)
 ## 🐛 Solução de Problemas
 
 ### Música não carregada
-- Verifique se `ambient.mp3` e `combat.mp3` existem em `assets/audio/background/`
+- Verifique se existem arquivos `reading_*.mp3` e `combat_*.mp3` em `assets/audio/background/`
 - Formatos suportados: MP3, WAV, OGG
 
 ### Erro ao carregar capítulo

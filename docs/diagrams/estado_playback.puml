@@ -1,0 +1,163 @@
+@startuml Diagrama de Estados - Sistema de Playback
+
+title Novel Reader - Estados do Sistema de Playback
+
+[*] --> Iniciando : Aplicação abre
+
+state Iniciando {
+    [*] --> CarregandoProgresso
+    CarregandoProgresso --> CarregandoCapitulo : Progresso encontrado
+    CarregandoCapresso --> CapituloInicial : Sem progresso
+    CarregandoCapitulo --> Pronto
+    CapituloInicial --> Pronto
+}
+
+Iniciando --> Parado : Interface pronta
+
+state Parado {
+    [*] --> AguardandoInicio
+    AguardandoInicio : - Botão: "Iniciar Narração"
+    AguardandoInicio : - Texto visível
+    AguardandoInicio : - Controles habilitados
+}
+
+Parado --> Narrando : Clique em "Iniciar"
+
+state Narrando {
+    [*] --> PreCarregando
+    
+    state PreCarregando {
+        [*] --> BuscandoCache
+        BuscandoCache --> CacheHit : Áudio em cache
+        BuscandoCache --> CacheMiss : Áudio não em cache
+        
+        CacheHit --> AudioPronto
+        
+        CacheMiss --> GerandoAudio
+        GerandoAudio : - Edge TTS
+        GerandoAudio : - Salvando MP3
+        GerandoAudio : - Carregando Sound
+        GerandoAudio --> AudioPronto
+        
+        AudioPronto --> AdicionandoCache : LRU update
+    }
+    
+    PreCarregando --> Reproduzindo : Áudio pronto
+    
+    state Reproduzindo {
+        [*] --> Tocando
+        Tocando : - Canal Pygame ativo
+        Tocando : - Display atualizado
+        Tocando : - Progresso visível
+        Tocando : - Botão: "Pausar"
+        
+        Tocando --> VerificandoFim : Loop tick
+        VerificandoFim --> Tocando : Ainda reproduzindo
+        VerificandoFim --> FimParagrafo : Áudio terminou
+        
+        FimParagrafo --> ProximoParagrafo : Auto-avançar
+    }
+    
+    state ProximoParagrafo {
+        [*] --> VerificandoLimite
+        VerificandoLimite --> MesmCapitulo : Há próximo parágrafo
+        VerificandoLimite --> ProximoCapitulo : Último parágrafo
+        
+        MesmCapitulo --> PreCarregando
+        
+        ProximoCapitulo --> AguardandoTransicao
+        AguardandoTransicao : Espera 2 segundos
+        AguardandoTransicao --> CarregandoNovoCapitulo
+        
+        state CarregandoNovoCapitulo {
+            [*] --> LendoJSON
+            LendoJSON --> AtualizandoInterface
+            AtualizandoInterface --> SalvandoProgresso
+            SalvandoProgresso --> [*]
+        }
+        
+        CarregandoNovoCapitulo --> PreCarregando : Capítulo carregado
+        CarregandoNovoCapitulo --> Parado : Último capítulo
+    }
+}
+
+Narrando --> Pausado : Clique em "Pausar"
+
+state Pausado {
+    [*] --> CanalPausado
+    CanalPausado : - canal.pause()
+    CanalPausado : - Botão: "Continuar"
+    CanalPausado : - Posição preservada
+    CanalPausado : - Tempo congelado
+}
+
+Pausado --> Narrando : Clique em "Continuar"
+Pausado --> Parado : Clique em "Parar"
+
+Narrando --> Parado : Clique em "Parar"
+
+state "Navegação Manual" as NavManual {
+    [*] --> DetectandoAcao
+    
+    DetectandoAcao --> ParandoAtual : Botão navegação clicado
+    
+    ParandoAtual : - Parar áudio atual
+    ParandoAtual : - Salvar estado
+    
+    ParandoAtual --> AtualizandoIndice
+    
+    state AtualizandoIndice {
+        state choice1 <<choice>>
+        [*] --> choice1
+        choice1 --> ParAnterior : Anterior
+        choice1 --> ProxPar : Próximo
+        choice1 --> CapAnterior : Cap anterior
+        choice1 --> CapProximo : Cap próximo
+        
+        ParAnterior --> ValidandoLimite
+        ProxPar --> ValidandoLimite
+        
+        ValidandoLimite --> AtualizaIndice : Dentro dos limites
+        ValidandoLimite --> [*] : Fora dos limites
+        
+        CapAnterior --> CarregandoCap
+        CapProximo --> CarregandoCap
+        
+        CarregandoCap --> AtualizaIndice
+        AtualizaIndice --> [*]
+    }
+    
+    AtualizandoIndice --> [*]
+}
+
+Narrando --> NavManual : Navegação
+Pausado --> NavManual : Navegação
+Parado --> NavManual : Seleção de capítulo
+
+NavManual --> Narrando : Se estava narrando
+NavManual --> Pausado : Se estava pausado
+NavManual --> Parado : Se estava parado
+
+Parado --> [*] : Fechar aplicação
+
+note right of Narrando
+  **Performance Crítica**
+  PreCarregando: < 100ms (hit)
+  GerandoAudio: < 1500ms (miss)
+end note
+
+note right of Pausado
+  **Estado Preservado**
+  Posição exata do áudio
+  Permite navegação
+  Continua sem perda
+end note
+
+note bottom of NavManual
+  **Transições Rápidas**
+  Independente do estado atual
+  Sempre salva progresso
+  Cache auxilia performance
+end note
+
+@enduml

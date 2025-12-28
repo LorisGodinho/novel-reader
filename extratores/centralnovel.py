@@ -213,7 +213,7 @@ if __name__ == "__main__":
     extrator = ExtratorCentralNovel()
     
     print("="*60)
-    print(" EXTRATOR CENTRAL NOVEL")
+    print(" EXTRATOR SITE DE NOVELS")
     print("="*60)
     print("\nExemplo de uso:")
     print("\n1. Extrair um capítulo:")

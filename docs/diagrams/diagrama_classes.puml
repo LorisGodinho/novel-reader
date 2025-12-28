@@ -1,0 +1,317 @@
+@startuml Diagrama de Classes - Novel Reader
+
+title Novel Reader - Diagrama de Classes Completo
+
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+
+' ============================================
+' CAMADA DE APRESENTAÇÃO
+' ============================================
+package "Camada de Apresentação" #DDFFDD {
+    
+    class TemaEscuro {
+        + BG_PRINCIPAL: str
+        + BG_SECUNDARIO: str
+        + ACCENT_PRIMARY: str
+        + TEXT_PRIMARY: str
+        + TEXT_SECONDARY: str
+        + SUCCESS: str
+        + WARNING: str
+        --
+        + aplicar_tema(root: Tk): void
+    }
+    
+    class MusicaFundo {
+        - canal_musica: Channel
+        - musica_normal: Sound
+        - musica_combate: Sound
+        - volume_musica: float
+        - mutado: bool
+        --
+        + __init__()
+        + carregar_musicas(): void
+        + tocar_normal(): void
+        + tocar_combate(): void
+        + mutar(mutar: bool): void
+        + set_volume(volume: float): void
+        + parar(): void
+    }
+    
+    class NovelReaderGUI {
+        - root: Tk
+        - leitor: LeitorNovel
+        - musica: MusicaFundo
+        - engine: EngineNarracaoSimples
+        - narrando: bool
+        - pausado: bool
+        - capitulo_atual: int
+        - paragrafo_atual: int
+        - conteudo_capitulo: List[str]
+        - modo_compacto: bool
+        --
+        + __init__(root: Tk)
+        + criar_interface(): void
+        + criar_cabecalho(): void
+        + criar_secao_controles(): void
+        + criar_area_visualizacao(): void
+        + criar_controles_playback(): void
+        + criar_tooltip(widget, texto): void
+        + ajustar_layout_responsivo(): void
+        + on_resize(event): void
+        + toggle_narracao(): void
+        + loop_narracao(): void
+        + parar_narracao_completa(): void
+        + atualizar_display(texto: str): void
+        + atualizar_status(): void
+        + precarregar_proximo_paragrafo(): void
+        + carregar_capitulo(numero: int): bool
+        + paragrafo_anterior(): void
+        + paragrafo_proximo(): void
+        + capitulo_anterior(): void
+        + capitulo_proximo(): void
+        + salvar_progresso(): void
+        + carregar_progresso(): void
+    }
+}
+
+' ============================================
+' CAMADA DE NEGÓCIO
+' ============================================
+package "Camada de Negócio" #DDDDFF {
+    
+    class LeitorNovel {
+        - caminho_novel: str
+        - metadata: Dict
+        - gerenciador_vozes: GerenciadorVozes
+        - wiki: WikiPersonagens
+        - capitulo_atual: int
+        - posicao_atual: int
+        --
+        + __init__(caminho_novel: str)
+        + carregar_capitulo(numero: int): Optional[Dict]
+        + listar_capitulos_disponiveis(): List[int]
+        + obter_total_paragrafos(numero: int): int
+        + salvar_progresso(cap: int, par: int): void
+        + carregar_progresso(): Tuple[int, int]
+        - _carregar_metadata(): Dict
+    }
+    
+    class GerenciadorVozes {
+        - vozes: Dict
+        - mapeamento: Dict
+        --
+        + associar_voz(personagem, voz): void
+        + obter_voz(personagem): str
+    }
+    
+    class WikiPersonagens {
+        - caminho: str
+        - personagens: Dict
+        --
+        + obter_info(nome: str): Dict
+        + adicionar(nome: str, info: Dict): void
+    }
+    
+    class ProcessadorEmocoes {
+        + EMOCOES: Dict[str, Dict]
+        + TAGS_MAPEAMENTO: Dict[str, str]
+        - deteccao_ativa: bool
+        --
+        + __init__()
+        + detectar_emocoes(texto: str): List[Tuple]
+        + processar_texto_com_emocoes(texto): List[Tuple]
+        + aplicar_emocao(config: Dict): void
+        + ativar_deteccao_auto(): void
+        + desativar_deteccao_auto(): void
+    }
+    
+    class GerenciadorVozesMulti {
+        - mapeamento_personagens: Dict
+        - vozes_disponiveis: Dict
+        --
+        + associar_personagem_voz(): void
+        + obter_voz_personagem(nome: str): str
+        + detectar_dialogos(texto: str): List[Tuple]
+        + limpar_mapeamentos(): void
+    }
+}
+
+' ============================================
+' CAMADA DE SERVIÇOS
+' ============================================
+package "Camada de Serviços" #FFFFDD {
+    
+    class EngineNarracaoSimples {
+        + VOZES: Dict[str, str]
+        - voz_atual: str
+        - temp_dir: str
+        - canal: Channel
+        - volume: float
+        - velocidade: int
+        - pausado: bool
+        - som_atual: Sound
+        - cache_sounds: OrderedDict
+        - max_cache_size: int
+        - fila_precarregamento: Queue
+        - thread_precarregamento: Thread
+        - precarregamento_ativo: bool
+        --
+        + __init__(voz: str, canal: Channel)
+        + solicitar_precarregamento(texto: str): void
+        + narrar(texto: str, callback): void
+        + set_velocidade(velocidade: int): void
+        + set_volume(volume: float): void
+        + pausar(): void
+        + despausar(): void
+        + parar(): void
+        + parar_precarregamento(): void
+        - _iniciar_thread_precarregamento(): void
+        - _worker_precarregamento(): void
+        - _gerar_audio_async(texto: str): str
+    }
+    
+    class EngineNarracao {
+        + VOZES: Dict[str, str]
+        - voz_atual: str
+        - temp_dir: str
+        - mapeamento_personagens: Dict
+        --
+        + __init__(voz_padrao: str)
+        + trocar_voz(nome_voz: str): bool
+        + associar_personagem(personagem, voz): void
+        + narrar_segmento(texto, config_emocao): void
+        - _gerar_audio_async(texto, voz, vel): str
+    }
+    
+    abstract class ExtratorGenerico {
+        # base_url: str
+        # headers: Dict
+        # session: Session
+        --
+        + {abstract} extrair_novel(slug, inicio, fim): void
+        + {abstract} extrair_capitulo(url, num): Dict
+        # _limpar_texto(texto: str): str
+        # _salvar_capitulo(dados, novel, num): void
+    }
+    
+    class ExtratorCentralNovel {
+        - base_url: str = "https://centralnovel.com"
+        --
+        + extrair_novel(slug, inicio, fim): void
+        + extrair_capitulo(url, numero): Dict
+        - _extrair_titulo(soup): str
+        - _extrair_conteudo(soup): List[str]
+    }
+}
+
+' ============================================
+' CAMADA DE CONTROLE (Legacy CLI)
+' ============================================
+package "Camada de Controle" #FFDDDD {
+    
+    class ControladorNarracao {
+        - leitor: LeitorNovel
+        - engine: EngineNarracao
+        - processador: ProcessadorEmocoes
+        - pausado: bool
+        - parando: bool
+        - pulou: bool
+        - direcao_pulo: int
+        --
+        + __init__(caminho_novel: str)
+        + iniciar(): void
+        + narrar_capitulo(numero: int): void
+        + narrar_continuo(inicio: int): void
+        + trocar_voz(): void
+        + toggle_deteccao_auto(): void
+        + listar_capitulos(): void
+        - _processar_tecla(key): void
+        - _mostrar_menu(): void
+    }
+}
+
+' ============================================
+' ESTRUTURAS DE DADOS
+' ============================================
+package "Estruturas de Dados" #FFEEEE {
+    
+    class Capitulo <<dataclass>> {
+        + numero: int
+        + titulo: str
+        + conteudo: List[str]
+    }
+    
+    class Metadata <<dataclass>> {
+        + titulo: str
+        + autor: str
+        + total_capitulos: int
+        + genero: str
+    }
+    
+    class Progresso <<dataclass>> {
+        + capitulo: int
+        + paragrafo: int
+        + tempo_total: float
+        + timestamp: str
+    }
+}
+
+' ============================================
+' RELACIONAMENTOS
+' ============================================
+
+' Apresentação -> Negócio
+NovelReaderGUI *-- TemaEscuro : usa
+NovelReaderGUI *-- MusicaFundo : contém
+NovelReaderGUI o-- LeitorNovel : usa
+NovelReaderGUI o-- EngineNarracaoSimples : usa
+
+' Negócio -> Dados
+LeitorNovel o-- GerenciadorVozes : usa
+LeitorNovel o-- WikiPersonagens : usa
+LeitorNovel ..> Capitulo : cria
+LeitorNovel ..> Metadata : lê
+LeitorNovel ..> Progresso : persiste
+
+' Serviços -> Externos
+EngineNarracaoSimples ..> "edge-tts" : usa
+EngineNarracaoSimples ..> "pygame" : usa
+MusicaFundo ..> "pygame" : usa
+
+' Herança
+ExtratorCentralNovel --|> ExtratorGenerico
+
+' Controle (Legacy)
+ControladorNarracao *-- LeitorNovel
+ControladorNarracao *-- EngineNarracao
+ControladorNarracao *-- ProcessadorEmocoes
+
+' Notas importantes
+note right of NovelReaderGUI
+  **Classe Principal**
+  Interface gráfica moderna
+  1100x800 pixels
+  Tema: Catppuccin Mocha
+end note
+
+note right of EngineNarracaoSimples
+  **Performance Crítica**
+  - Cache LRU: 10 parágrafos
+  - Pré-carregamento thread
+  - Transição: < 100ms
+end note
+
+note right of LeitorNovel
+  **Repository Pattern**
+  Abstração de acesso a dados
+  Gerencia capítulos e progresso
+end note
+
+note bottom of ExtratorGenerico
+  **Adapter Pattern**
+  Abstração de extração
+  Permite múltiplos sites
+end note
+
+@enduml

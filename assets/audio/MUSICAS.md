@@ -1,52 +1,72 @@
-# Músicas de Fundo - Novel Reader
+# BGMs Disponíveis no Novel Reader
 
-Este projeto precisa de 2 arquivos de música de fundo:
+## 📋 BGMs Incluídas (6 faixas)
 
-## Onde Baixar (Gratuito e Royalty-Free)
+O projeto conta com **6 BGMs equalizadas** para loop perfeito, todas processadas profissionalmente.
 
-### 1. Música Ambiente Normal (`ambient.mp3`)
-- **Pixabay Music**: https://pixabay.com/music/
-  - Buscar: "ambient", "calm", "peaceful"
-  - Recomendado: "Lofi Study" ou "Calm Piano"
-  
-- **Free Music Archive**: https://freemusicarchive.org/
-  - Buscar: "ambient", "meditation"
+### ⚔️ BGMs de Combate (3)
+- `combat_battle_1.mp3` (4.12 MB) - Épica e dramática
+- `combat_battle_3.mp3` (4.12 MB) - Intensa e energética  
+- `combat_synthetic_2.mp3` (4.12 MB) - Sintética com tons graves profundos
 
-- **YouTube Audio Library**: https://studio.youtube.com/
-  - Seção: "Música sem direitos autorais"
-  - Gênero: Ambiente
+### 📖 BGMs de Leitura (3)
+- `reading_chinese_1.mp3` (5.49 MB) - Música chinesa tradicional
+- `reading_synthetic_2.mp3` (5.49 MB) - Tons harmônicos suaves
+- `reading_synthetic_3.mp3` (5.49 MB) - Ambiente contemplativo
 
-### 2. Música de Combate (`combat.mp3`)
-- **Pixabay Music**: https://pixabay.com/music/
-  - Buscar: "action", "epic", "battle"
-  - Recomendado: "Epic Cinematic" ou "Action Battle"
+**Total**: ~33 MB de áudio de alta qualidade
 
-- **Free Music Archive**: https://freemusicarchive.org/
-  - Buscar: "epic", "orchestral", "cinematic"
+## ✨ Características Técnicas
 
-- **Incompetech**: https://incompetech.com/
-  - Seção: "Dramatic" ou "Action"
+Todas as BGMs foram processadas com:
 
-## Como Adicionar
+- ✅ **Equalização constante**: Volume consistente do início ao fim (sem picos/vales)
+- ✅ **Fade in/out**: 2 segundos de transição suave para loop perfeito
+- ✅ **Normalização**: -16 LUFS (combate) / -20 LUFS (leitura)
+- ✅ **Qualidade**: MP3 192kbps
+- ✅ **Loop perfeito**: Sem interrupções audíveis na transição
 
-1. Baixe as músicas dos sites acima
-2. Converta para MP3 se necessário
-3. Renomeie para:
-   - `ambient.mp3` (música calma)
-   - `combat.mp3` (música de ação)
-4. Coloque em: `novel_reader/assets/audio/background/`
+## 🎵 Como Foram Criadas
 
-## Configurações Recomendadas
+### BGMs do YouTube
+- Baixadas de fontes sem copyright usando `yt-dlp`
+- Cortado o melhor trecho equalizado (3-4 minutos)
+- Processadas com FFmpeg: normalização, fade, equalização
 
-- **Formato**: MP3
-- **Bitrate**: 128kbps (menor arquivo, qualidade OK para fundo)
-- **Duração**: 2-5 minutos (loop automático)
-- **Volume**: Ajustado no código para 30% (não sobrepõe narração)
+### BGMs Sintéticas
+- Criadas com Python (numpy + scipy)
+- Tons harmônicos cuidadosamente escolhidos
+- Frequências otimizadas para cada categoria
 
-## Sites Verificados Sem Copyright
+## 📝 Scripts Disponíveis
 
-✅ **Pixabay** - CC0, uso comercial permitido
-✅ **FMA** - Creative Commons, créditos recomendados
+### 1. Baixar do YouTube
+```powershell
+python baixar_musicas.py
+```
+Baixa e processa BGMs do YouTube automaticamente.
+
+### 2. Criar Sintéticas
+```powershell
+python criar_bgms_sinteticas.py
+```
+Gera BGMs sintéticas de alta qualidade.
+
+## 🎮 Uso no Aplicativo
+
+As BGMs são detectadas automaticamente pelo Novel Reader:
+- **Combate**: Busca arquivos `combat_*.mp3`
+- **Leitura**: Busca arquivos `reading_*.mp3`
+
+## 🔧 Como Adicionar Mais BGMs
+
+Veja o guia completo em [COMO_ADICIONAR_MUSICAS.md](COMO_ADICIONAR_MUSICAS.md)
+
+## Sites de Música Livre (Referência)
+
+✅ **YouTube Audio Library** - Sem copyright
+✅ **Pixabay Music** - CC0, uso comercial permitido
+✅ **Free Music Archive** - Creative Commons
 ✅ **Incompetech** - Creative Commons com atribuição
 ✅ **YouTube Audio Library** - Gratuito para uso
 

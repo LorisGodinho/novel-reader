@@ -96,7 +96,7 @@ Localização: `_backup_pre_modernizacao/`
 #### ✅ Verificações Realizadas:
 1. ✅ Aplicação inicia sem erros
 2. ✅ Pygame carregado corretamente
-3. ✅ Músicas carregadas (ambient.mp3, combat.mp3)
+3. ✅ Músicas carregadas (reading_*.mp3, combat_*.mp3)
 4. ✅ Progresso restaurado corretamente
 5. ✅ Interface renderizada com tema escuro
 6. ✅ Todos os controles visíveis e funcionais

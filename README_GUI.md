@@ -57,11 +57,11 @@ cd C:\Users\loris\Desktop\novel_reader
    - Incompetech
    - YouTube Audio Library
 
-2. Salve como:
-   - `assets/audio/background/ambient.mp3` (música calma)
-   - `assets/audio/background/combat.mp3` (música ação)
+2. O projeto já inclui 6 BGMs equalizadas:
+   - 3x `reading_*.mp3` (músicas para leitura)
+   - 3x `combat_*.mp3` (músicas para combate)
 
-Veja `assets/audio/MUSICAS.md` para links e instruções.
+Veja `assets/audio/MUSICAS.md` para detalhes das BGMs incluídas.
 
 ## 🎮 Controles
 
@@ -101,7 +101,7 @@ Todos os controles são clicáveis:
 
 **Música não toca:**
 - Verifique se os arquivos MP3 estão em `assets/audio/background/`
-- Nomes corretos: `ambient.mp3` e `combat.mp3`
+- Arquivos necessários: `reading_*.mp3` e `combat_*.mp3` (pelo menos um de cada)
 
 **Controles não funcionam:**
 - Certifique-se que a janela está em foco (clique nela)

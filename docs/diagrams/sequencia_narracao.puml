@@ -1,0 +1,111 @@
+@startuml Diagrama de Sequência - Iniciar Narração
+
+title Novel Reader - Sequência: Iniciar Narração
+
+actor "Leitor" as Usuario
+participant "NovelReaderGUI" as GUI
+participant "LeitorNovel" as Leitor
+participant "EngineNarracaoSimples" as Engine
+participant "ProcessadorEmocoes" as Emocoes
+participant "MusicaFundo" as Musica
+participant "Edge TTS" as TTS
+participant "Pygame" as Audio
+database "JSON Files" as DB
+
+== Inicialização ==
+Usuario -> GUI : Clica "Iniciar Narração"
+activate GUI
+
+GUI -> GUI : carregar_progresso()
+GUI -> DB : Ler progresso.json
+DB --> GUI : {capitulo: 5, paragrafo: 12}
+
+GUI -> Leitor : carregar_capitulo(5)
+activate Leitor
+Leitor -> DB : Ler cap_0005.json
+DB --> Leitor : {numero, titulo, conteudo[]}
+Leitor --> GUI : Dict com capítulo
+deactivate Leitor
+
+== Pré-carregamento ==
+GUI -> Engine : solicitar_precarregamento(texto_atual)
+activate Engine
+Engine -> Engine : Adiciona à fila_precarregamento
+Engine -> Engine : Thread worker processa
+Engine -> TTS : Communicate.create(texto)
+activate TTS
+TTS --> Engine : audio_data (MP3)
+deactivate TTS
+Engine -> Engine : Salvar em temp_dir
+Engine -> Audio : pygame.mixer.Sound(arquivo)
+activate Audio
+Audio --> Engine : Sound object
+deactivate Audio
+Engine -> Engine : Adicionar ao cache_sounds (LRU)
+Engine --> GUI : [Assíncrono]
+deactivate Engine
+
+== Narração ==
+GUI -> Musica : tocar_normal()
+activate Musica
+Musica -> Audio : canal_musica.play(musica_normal, -1)
+Musica --> GUI : OK
+deactivate Musica
+
+GUI -> Emocoes : processar_texto_com_emocoes(texto)
+activate Emocoes
+Emocoes -> Emocoes : detectar_emocoes(texto)
+Emocoes -> Emocoes : Regex patterns (grito, sussurro, etc.)
+Emocoes --> GUI : [(texto, config_emocao), ...]
+deactivate Emocoes
+
+GUI -> Engine : narrar(texto, callback_pausado)
+activate Engine
+Engine -> Engine : Verificar cache_sounds
+alt Cache Hit
+    Engine -> Engine : Som já carregado
+else Cache Miss
+    Engine -> TTS : Gerar áudio sob demanda
+    TTS --> Engine : audio_data
+    Engine -> Audio : pygame.mixer.Sound()
+    Audio --> Engine : Sound object
+end
+
+Engine -> Audio : canal.play(som_atual)
+activate Audio
+Audio --> Engine : Playing
+deactivate Audio
+
+loop Enquanto narrando
+    Engine -> Engine : Verificar callback_pausado()
+    alt Pausado
+        Engine -> Audio : canal.pause()
+    else Não pausado
+        Engine -> Audio : Verificar canal.get_busy()
+    end
+end
+
+Engine --> GUI : Narração concluída
+deactivate Engine
+
+== Atualização Interface ==
+GUI -> GUI : atualizar_display(texto)
+GUI -> GUI : atualizar_status()
+GUI -> GUI : Atualizar barra de progresso
+
+== Transição Automática ==
+GUI -> GUI : precarregar_proximo_paragrafo()
+GUI -> Engine : solicitar_precarregamento(proximo_texto)
+activate Engine
+Engine -> Engine : Adiciona à fila (thread worker)
+Engine --> GUI : [Assíncrono]
+deactivate Engine
+
+GUI -> GUI : salvar_progresso()
+GUI -> DB : Escrever progresso.json
+DB --> GUI : OK
+
+Usuario <-- GUI : Texto atualizado\nÁudio reproduzindo
+deactivate GUI
+
+@enduml

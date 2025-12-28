@@ -1,0 +1,125 @@
+@startuml Diagrama de Atividade - Extração de Novel
+
+title Novel Reader - Atividade: Extração de Novel do Site
+
+start
+
+:Admin executa script de extração;
+
+:Informar parâmetros:
+- Slug da novel
+- Capítulo inicial
+- Capítulo final;
+
+:Criar diretório da novel
+se não existir;
+
+:Iniciar sessão HTTP
+com User-Agent;
+
+partition "Loop de Capítulos" {
+    repeat :Próximo capítulo no range;
+        
+        :Construir URL do capítulo;
+        
+        :Verificar se arquivo JSON
+        já existe;
+        
+        if (Arquivo existe?) then (sim)
+            :Pular capítulo;
+            #LightGreen
+        else (não)
+            :Fazer requisição GET;
+            
+            if (Status 200 OK?) then (sim)
+                :Parsear HTML com
+                BeautifulSoup;
+                
+                :Extrair título do capítulo;
+                :Extrair conteúdo (parágrafos);
+                
+                :Limpar formatação HTML:
+                - Remover tags
+                - Normalizar espaços
+                - Remover caracteres especiais;
+                
+                :Dividir em lista
+                de parágrafos;
+                
+                :Criar estrutura JSON:
+                {
+                  "numero": X,
+                  "titulo": "...",
+                  "conteudo": [...]
+                };
+                
+                :Salvar JSON em
+                novels/nome/capitulos/;
+                
+                :Log: "Capítulo X extraído";
+                #LightGreen
+                
+            else (erro)
+                :Log de erro;
+                
+                if (Tentativas < 3?) then (sim)
+                    :Aguardar 5 segundos;
+                    :Retry;
+                    #Orange
+                else (não)
+                    :Pular capítulo;
+                    :Adicionar a lista
+                    de falhas;
+                    #Pink
+                endif
+            endif
+            
+            :Rate limiting:
+            Aguardar 1 segundo;
+        endif
+        
+    repeat while (Mais capítulos no range?) is (sim)
+    ->não;
+}
+
+:Criar/atualizar metadata.json:
+{
+  "titulo": "...",
+  "autor": "...",
+  "total_capitulos": X,
+  "genero": "...",
+  "fonte": "CentralNovel",
+  "data_extracao": "..."
+};
+
+:Exibir relatório:
+- Total de capítulos extraídos
+- Capítulos pulados (já existentes)
+- Capítulos com falha;
+
+if (Algum capítulo falhou?) then (sim)
+    :Salvar lista de falhas
+    em log.txt;
+    #Orange
+else (não)
+    #LightGreen
+endif
+
+:Novel pronta para narração;
+
+stop
+
+note right
+  **Regras de Negócio:**
+  - Rate limiting: 1 req/seg
+  - Max 3 tentativas por capítulo
+  - User-Agent personalizado
+  - Respeito ao robots.txt
+  
+  **Performance:**
+  - 1 capítulo/seg
+  - 100 capítulos = ~2 minutos
+  - 1000 capítulos = ~20 minutos
+end note
+
+@enduml
