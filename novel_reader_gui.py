@@ -15,6 +15,7 @@ import tempfile
 import time
 import json
 import shutil
+import subprocess
 from queue import Queue
 from collections import OrderedDict
 
@@ -325,25 +326,76 @@ class EngineNarracaoSimples:
         'Duarte': 'pt-PT-DuarteNeural'
     }
     
+    # Edge TTS soa natural até ~1.5×; acima disso usamos ffmpeg (atempo)
+    # para acelerar de verdade preservando o tom da voz.
+    RATE_NATIVO_MAX = 1.5
+
     def __init__(self, voz='Francisca', canal=None):
         self.voz_atual = self.VOZES.get(voz, self.VOZES['Francisca'])
         self.temp_dir = tempfile.gettempdir()
         self.canal = canal if canal else pygame.mixer.Channel(1)
         self.volume = 1.0
-        self.velocidade = 0
+        self.multiplicador = 1.0  # 0.5× a 3.0×
         self.pausado = False
         self.som_atual = None
-        
+        self.ffmpeg = self._localizar_ffmpeg()
+
         # Sistema de cache otimizado com OrderedDict para LRU
-        self.cache_sounds = OrderedDict()  # {hash_texto: pygame.Sound}
-        self.max_cache_size = 10  # Manter últimos 10 parágrafos em cache
-        
+        self.cache_sounds = OrderedDict()  # {chave: pygame.Sound}
+        self.max_cache_size = 16  # Janela de pré-carregamento maior
+
         # Sistema de pré-carregamento com thread dedicada
         self.fila_precarregamento = Queue()
+        self.desejados = set()       # chaves já enfileiradas/em cache (evita duplicar)
+        self._lock = threading.Lock()
         self.thread_precarregamento = None
         self.precarregamento_ativo = False
         self._iniciar_thread_precarregamento()
-        
+
+    # ----- Helpers de velocidade / ffmpeg -----
+    def _localizar_ffmpeg(self):
+        """Retorna o caminho do ffmpeg.exe empacotado, ou 'ffmpeg' do PATH."""
+        candidato = os.path.join(obter_caminho_base(), 'ffmpeg.exe')
+        if os.path.exists(candidato):
+            return candidato
+        return shutil.which('ffmpeg') or 'ffmpeg'
+
+    def _chave(self, texto: str) -> str:
+        """Chave de cache única por texto + velocidade + voz."""
+        return f"{hash(texto)}_{self.multiplicador:.2f}_{self.voz_atual}"
+
+    def _decompor_velocidade(self):
+        """Divide o multiplicador entre rate nativo (Edge) e residual (ffmpeg)."""
+        mult = max(0.5, min(3.0, self.multiplicador))
+        nativo = min(mult, self.RATE_NATIVO_MAX)
+        edge_rate_pct = int(round((nativo - 1.0) * 100))
+        residual = mult / nativo  # 1.0 .. 2.0
+        return edge_rate_pct, residual
+
+    def _aplicar_ffmpeg(self, entrada: str, residual: float, chave: str) -> str:
+        """Acelera o áudio via ffmpeg atempo (tom preservado). Fallback: retorna entrada."""
+        if residual <= 1.001:
+            return entrada
+        saida = os.path.join(self.temp_dir, f'tts_x_{abs(hash(chave))}.mp3')
+        if os.path.exists(saida):
+            return saida
+        try:
+            flags = 0
+            if os.name == 'nt':
+                flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            subprocess.run(
+                [self.ffmpeg, '-y', '-i', entrada,
+                 '-filter:a', f'atempo={residual:.4f}',
+                 '-vn', saida],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=flags, timeout=30
+            )
+            if os.path.exists(saida) and os.path.getsize(saida) > 0:
+                return saida
+        except Exception as e:
+            print(f"⚠️ ffmpeg indisponível ({e}); usando velocidade nativa (teto ~2×)")
+        return entrada
+
     def _iniciar_thread_precarregamento(self):
         """Inicia thread dedicada para pré-carregamento."""
         self.precarregamento_ativo = True
@@ -352,115 +404,113 @@ class EngineNarracaoSimples:
             daemon=True
         )
         self.thread_precarregamento.start()
-    
+
     def _worker_precarregamento(self):
         """Worker thread que processa fila de pré-carregamento."""
         while self.precarregamento_ativo:
             try:
-                # Pegar próximo texto da fila (timeout de 1s)
                 texto = self.fila_precarregamento.get(timeout=1.0)
-                
                 if not texto or not texto.strip():
                     continue
-                
-                texto_hash = f"{hash(texto)}_{self.velocidade}"
-                
-                # Se já está em cache, pular
-                if texto_hash in self.cache_sounds:
+
+                chave = self._chave(texto)
+                if chave in self.cache_sounds:
+                    self.desejados.discard(chave)
                     continue
-                
-                # Gerar áudio
+
                 arquivo = asyncio.run(self._gerar_audio_async(texto))
                 som = pygame.mixer.Sound(arquivo)
-                
-                # Adicionar ao cache (LRU)
-                self.cache_sounds[texto_hash] = som
-                
-                # Limitar tamanho do cache
-                if len(self.cache_sounds) > self.max_cache_size:
-                    # Remover o mais antigo (primeiro item)
-                    self.cache_sounds.popitem(last=False)
-                
-                print(f"✓ Pré-carregado em background")
-                
+
+                with self._lock:
+                    self.cache_sounds[chave] = som
+                    if len(self.cache_sounds) > self.max_cache_size:
+                        self.cache_sounds.popitem(last=False)
+                    self.desejados.discard(chave)
+
+                print(f"✓ Pré-carregado em background (buffer: {len(self.cache_sounds)})")
             except Exception as e:
                 if not isinstance(e, TimeoutError):
                     pass  # Timeout é normal quando não há nada na fila
-    
+
     async def _gerar_audio_async(self, texto: str):
-        """Gera áudio usando Edge TTS."""
-        texto_hash = f"{hash(texto)}_{self.velocidade}"
-        rate = f"{self.velocidade:+d}%"
-        temp_file = os.path.join(self.temp_dir, f'tts_{texto_hash}.mp3')
-        
-        if not os.path.exists(temp_file):
+        """Gera áudio via Edge TTS e aplica ffmpeg quando > 1.5×."""
+        chave = self._chave(texto)
+        edge_rate_pct, residual = self._decompor_velocidade()
+        rate = f"{edge_rate_pct:+d}%"
+        base = os.path.join(self.temp_dir, f'tts_{abs(hash(chave))}_r{edge_rate_pct}.mp3')
+
+        if not os.path.exists(base):
             communicate = edge_tts.Communicate(texto, self.voz_atual, rate=rate)
-            await communicate.save(temp_file)
-        
-        return temp_file
-    
-    def set_velocidade(self, velocidade):
-        """Define velocidade (-50 a +50)."""
-        self.velocidade = int(velocidade)
-        print(f"⚡ Velocidade narração: {self.velocidade:+d}%")
-    
+            await communicate.save(base)
+
+        return self._aplicar_ffmpeg(base, residual, chave)
+
+    def set_velocidade(self, multiplicador):
+        """Define a velocidade como multiplicador (0.5× a 3.0×)."""
+        self.multiplicador = max(0.5, min(3.0, float(multiplicador)))
+        print(f"⚡ Velocidade narração: {self.multiplicador:.2f}×")
+
     def set_volume(self, volume):
         """Define volume (0.0 a 1.0)."""
         self.volume = volume
         if self.som_atual:
             self.som_atual.set_volume(volume)
         print(f"🎙️ Volume narração: {int(volume * 100)}%")
-    
+
     def pausar(self):
         """Pausa a narração."""
         if self.canal.get_busy():
             self.canal.pause()
             self.pausado = True
-    
+
     def despausar(self):
         """Continua a narração."""
         if self.pausado:
             self.canal.unpause()
             self.pausado = False
-    
+
     def parar(self):
         """Para a narração completamente."""
         self.canal.stop()
         self.pausado = False
-    
+
     def solicitar_precarregamento(self, texto: str):
-        """Adiciona texto à fila de pré-carregamento."""
-        if texto and texto.strip():
-            # Limpar fila antiga e adicionar novo
-            while not self.fila_precarregamento.empty():
-                try:
-                    self.fila_precarregamento.get_nowait()
-                except:
-                    break
+        """Compat: pré-carrega um único parágrafo."""
+        self.solicitar_precarregamento_lote([texto])
+
+    def solicitar_precarregamento_lote(self, textos):
+        """Enfileira uma janela de parágrafos, sem limpar o cache existente."""
+        for texto in textos:
+            if not texto or not texto.strip():
+                continue
+            chave = self._chave(texto)
+            with self._lock:
+                if chave in self.cache_sounds or chave in self.desejados:
+                    continue
+                self.desejados.add(chave)
             self.fila_precarregamento.put(texto)
-    
+
     def narrar(self, texto: str, callback_pausado=None):
         """Narra texto simples com suporte a pausa e cache."""
         if not texto.strip():
             return
-        
+
         try:
-            texto_hash = f"{hash(texto)}_{self.velocidade}"
-            
-            # Tentar obter do cache primeiro
-            if texto_hash in self.cache_sounds:
-                self.som_atual = self.cache_sounds[texto_hash]
+            chave = self._chave(texto)
+
+            if chave in self.cache_sounds:
+                self.som_atual = self.cache_sounds[chave]
                 print(f"⚡ Usando áudio do cache (transição instantânea)")
             else:
-                # Se não está em cache, gerar agora (fallback)
                 print(f"⚠️ Áudio não estava em cache, gerando...")
                 arquivo = asyncio.run(self._gerar_audio_async(texto))
                 self.som_atual = pygame.mixer.Sound(arquivo)
-                self.cache_sounds[texto_hash] = self.som_atual
-            
+                with self._lock:
+                    self.cache_sounds[chave] = self.som_atual
+
             self.som_atual.set_volume(self.volume)
             self.canal.play(self.som_atual)
-            
+
             while self.canal.get_busy() or self.pausado:
                 if callback_pausado and callback_pausado():
                     if not self.pausado:
@@ -470,12 +520,14 @@ class EngineNarracaoSimples:
                 time.sleep(0.01)  # Reduzir sleep para melhor responsividade
         except Exception as e:
             print(f"Erro ao narrar: {e}")
-    
+
     def limpar_cache(self):
         """Limpa o cache de áudios."""
-        self.cache_sounds.clear()
+        with self._lock:
+            self.cache_sounds.clear()
+            self.desejados.clear()
         print("🗑️ Cache de áudio limpo")
-    
+
     def trocar_voz(self, nova_voz):
         """Troca a voz e limpa o cache."""
         voz_id = self.VOZES.get(nova_voz, self.VOZES['Francisca'])
@@ -483,7 +535,7 @@ class EngineNarracaoSimples:
             self.voz_atual = voz_id
             self.limpar_cache()
             print(f"🎙️ Voz alterada para: {nova_voz}")
-    
+
     def parar_precarregamento(self):
         """Para a thread de pré-carregamento."""
         self.precarregamento_ativo = False
@@ -521,13 +573,18 @@ class NovelReaderGUI:
         self.tempo_inicio_narracao = None
         self.tempo_total_narracao = 0
         self.modo_compacto = False  # Controla layout adaptativo
-        self.modo_leitura = False  # Modo de leitura focado
-        self.controles_visiveis = True  # Controla visibilidade dos controles
-        
+        self.modo_leitura = True   # Modo de leitura imersivo ativo por padrão
+        self.velocidade_mult = 1.0  # Multiplicador de velocidade (0.5×–3.0×)
+        self.pular_para = None      # Sinal de "pular para parágrafo" para o loop
+        self.imersivo_total = False # Tela cheia sem cabeçalho
+        self.drawer_aberto = False  # Painel lateral de configurações
+        self._cache_prox_capitulo = {}  # {numero: conteudo} prefetch de capítulos
+        self._barra_timer = None    # Timer de auto-hide da barra flutuante
+
         # Configurações de estilização de texto
         self.config_texto = {
             'paleta': 'padrao',
-            'tamanho_fonte': 11
+            'tamanho_fonte': 13
         }
         self.carregar_config_texto()
         
@@ -543,677 +600,426 @@ class NovelReaderGUI:
         self.carregar_progresso()
         self.musica.carregar_musicas()
         self.inicializar_comboboxes_bgm()
-        
+
+        # Renderizar o capítulo no modo leitura já na abertura
+        if self.conteudo_capitulo:
+            self.atualizar_display_modo_leitura()
+        self.atualizar_status()
+
         # Bind de foco e redimensionamento
         self.root.bind('<FocusIn>', self.on_focus)
         self.root.bind('<FocusOut>', self.on_unfocus)
         self.root.bind('<Configure>', self.on_resize)
         self.tem_foco = True
-        
+
+        # Atalhos de teclado (comandos dinâmicos)
+        self._registrar_atalhos()
+
+        # Auto-hide da barra flutuante ao mover o mouse
+        self.root.bind('<Motion>', self._on_mouse_activity)
+        self._agendar_esconder_barra()
+
         # Protocolo para fechar janela
         self.root.protocol("WM_DELETE_WINDOW", self.on_fechar_janela)
     
     def criar_interface(self):
-        """Cria todos os elementos da interface moderna."""
-        
-        # Container principal com padding
-        main_container = ttk.Frame(self.root, padding=15)
+        """Monta a interface imersiva: cabeçalho fino, texto em tela cheia,
+        barra de player flutuante auto-oculta e drawer lateral de ajustes."""
+        # Cores das listbox dos comboboxes (aplicar uma vez)
+        self.root.option_add('*TCombobox*Listbox.background', TemaEscuro.BG_SECUNDARIO)
+        self.root.option_add('*TCombobox*Listbox.foreground', TemaEscuro.TEXT_PRIMARY)
+        self.root.option_add('*TCombobox*Listbox.selectBackground', TemaEscuro.ACCENT_PRIMARY)
+        self.root.option_add('*TCombobox*Listbox.selectForeground', TemaEscuro.BG_PRINCIPAL)
+
+        # Container principal
+        main_container = ttk.Frame(self.root)
         main_container.grid(row=0, column=0, sticky='nsew')
         main_container.grid_columnconfigure(0, weight=1)
-        main_container.grid_rowconfigure(2, weight=1)  # Área de texto expande
-        
-        # ===== CABEÇALHO =====
+        main_container.grid_rowconfigure(1, weight=1)  # texto expande
+
+        # Cabeçalho fino
         self.criar_cabecalho(main_container)
-        
-        # ===== SEÇÃO DE CONTROLES (Topo) =====
-        self.frame_controles = ttk.Frame(main_container)
-        self.frame_controles.grid(row=1, column=0, sticky='ew', pady=(0, 10))
-        
-        # Botão esconder/mostrar controles (canto superior direito)
-        btn_toggle_container = ttk.Frame(self.frame_controles)
-        btn_toggle_container.pack(fill='x', pady=(0, 5))
-        
-        self.btn_toggle_controles = ttk.Button(btn_toggle_container,
-                                              text="▲ Esconder Controles",
-                                              command=self.toggle_controles,
-                                              width=20)
-        self.btn_toggle_controles.pack(side='right')
-        
-        self.criar_secao_controles(self.frame_controles)
-        
-        # ===== ÁREA DE VISUALIZAÇÃO (Expandida) =====
+
+        # Área de texto (ocupa a tela)
         self.frame_texto = ttk.Frame(main_container)
-        self.frame_texto.grid(row=2, column=0, sticky='nsew')
+        self.frame_texto.grid(row=1, column=0, sticky='nsew')
         self.frame_texto.grid_rowconfigure(0, weight=1)
         self.frame_texto.grid_columnconfigure(0, weight=1)
-        
         self.criar_area_visualizacao(self.frame_texto)
-        
-        # ===== CONTROLES DE PLAYBACK =====
-        self.criar_controles_playback(self.frame_texto)
-        
-        # ===== RODAPÉ =====
-        self.criar_rodape(main_container)
-    
+
+        # Overlays flutuantes
+        self.criar_barra_player()
+        self.criar_drawer()
+
     def criar_cabecalho(self, parent):
-        """Cria cabeçalho com título e status."""
-        header_frame = ttk.Frame(parent)
-        header_frame.grid(row=0, column=0, sticky='ew', pady=(0, 15))
-        header_frame.grid_columnconfigure(1, weight=1)
-        
-        # Título
-        titulo = ttk.Label(header_frame, 
-                          text="📚 Novel Reader",
-                          font=('Segoe UI', 22, 'bold'),
-                          foreground=TemaEscuro.ACCENT_PRIMARY)
-        titulo.grid(row=0, column=0, sticky='w')
-        
-        # Subtítulo
-        subtitulo = ttk.Label(header_frame,
-                             text="Sistema de Narração Inteligente",
-                             font=('Segoe UI', 9),
-                             foreground=TemaEscuro.TEXT_MUTED)
-        subtitulo.grid(row=1, column=0, sticky='w')
-        
-        # Botão de configurações (engrenagem) - mesma linha do título
-        btn_config = ttk.Button(header_frame, text="⚙️", width=3, 
-                               command=self.abrir_configuracoes)
-        btn_config.grid(row=0, column=3, sticky='ne', padx=(10, 0))
-        
-        # Status badge - alinhado com botão de engrenagem
-        self.status_badge = tk.Label(header_frame,
-                                     text="⏹️ PARADO",
+        """Cabeçalho fino com título, posição, status e engrenagem."""
+        self.header_frame = ttk.Frame(parent, padding=(14, 8))
+        self.header_frame.grid(row=0, column=0, sticky='ew')
+        self.header_frame.grid_columnconfigure(1, weight=1)
+
+        ttk.Label(self.header_frame, text="📚 Novel Reader",
+                  font=('Segoe UI', 14, 'bold'),
+                  foreground=TemaEscuro.ACCENT_PRIMARY).grid(row=0, column=0, sticky='w')
+
+        info = ttk.Frame(self.header_frame)
+        info.grid(row=0, column=1, sticky='w', padx=16)
+        self.lbl_posicao = ttk.Label(info, text="Capítulo: - | Parágrafo: -/-",
+                                     font=('Segoe UI', 10))
+        self.lbl_posicao.pack(side='left', padx=(0, 14))
+        self.lbl_cap_info = ttk.Label(info, text="", font=('Segoe UI', 9),
+                                      foreground=TemaEscuro.ACCENT_SUCCESS)
+        self.lbl_cap_info.pack(side='left', padx=(0, 14))
+        self.lbl_progresso_total = ttk.Label(info, text="", font=('Segoe UI', 9),
+                                             foreground=TemaEscuro.TEXT_SECONDARY)
+        self.lbl_progresso_total.pack(side='left')
+
+        self.status_badge = tk.Label(self.header_frame, text="⏹️ PARADO",
                                      font=('Segoe UI', 10, 'bold'),
                                      bg=TemaEscuro.BG_TERCIARIO,
                                      fg=TemaEscuro.TEXT_SECONDARY,
-                                     padx=15,
-                                     pady=5,
-                                     relief='flat',
-                                     borderwidth=0)
-        self.status_badge.grid(row=0, column=2, sticky='e', padx=(0, 5))
-        
-        # Posição info
-        self.lbl_posicao = ttk.Label(header_frame,
-                                     text="Capítulo: - | Parágrafo: -/-",
-                                     font=('Segoe UI', 10))
-        self.lbl_posicao.grid(row=2, column=0, columnspan=3, sticky='w', pady=(5, 0))
-        
-        # Info de capítulo carregado
-        self.lbl_cap_info = ttk.Label(header_frame,
-                                      text="",
-                                      font=('Segoe UI', 9),
-                                      foreground=TemaEscuro.ACCENT_SUCCESS)
-        self.lbl_cap_info.grid(row=3, column=0, columnspan=3, sticky='w', pady=(2, 0))
-        
-        # Progresso total da novel
-        self.lbl_progresso_total = ttk.Label(header_frame,
-                                             text="",
-                                             font=('Segoe UI', 9),
-                                             foreground=TemaEscuro.TEXT_SECONDARY)
-        self.lbl_progresso_total.grid(row=4, column=0, columnspan=4, sticky='w', pady=(2, 5))
-        
-        # Separador
-        ttk.Separator(header_frame, orient='horizontal').grid(row=5, column=0, columnspan=4, sticky='ew', pady=(5, 0))
-    
-    def criar_secao_controles_vertical(self, parent):
-        """Cria seção de controles em layout vertical."""
-        # Frame principal dos controles com scrollbar
-        canvas_frame = ttk.Frame(parent)
-        canvas_frame.grid(row=1, column=0, sticky='nsew')
-        canvas_frame.grid_rowconfigure(0, weight=1)
-        canvas_frame.grid_columnconfigure(0, weight=1)
-        
-        canvas = tk.Canvas(canvas_frame, bg=TemaEscuro.BG_PRINCIPAL, 
-                          highlightthickness=0, width=280)
-        canvas.grid(row=0, column=0, sticky='nsew')
-        
-        scrollbar = ttk.Scrollbar(canvas_frame, orient='vertical', command=canvas.yview)
-        scrollbar.grid(row=0, column=1, sticky='ns')
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        controls_frame = ttk.Frame(canvas)
-        canvas_window = canvas.create_window((0, 0), window=controls_frame, anchor='nw')
-        
-        def on_frame_configure(event=None):
-            canvas.configure(scrollregion=canvas.bbox('all'))
-            canvas.itemconfig(canvas_window, width=canvas.winfo_width())
-        
-        controls_frame.bind('<Configure>', on_frame_configure)
-        canvas.bind('<Configure>', lambda e: canvas.itemconfig(canvas_window, width=e.width))
-        
-        # === NOVEL ===
-        novel_card = ttk.LabelFrame(controls_frame, text="📖 Novel", padding=10)
-        novel_card.pack(fill='x', pady=(0, 10))
-        
-        self.combo_novel = ttk.Combobox(novel_card, values=['Martial World'], 
-                                        state='readonly', width=25)
-        self.combo_novel.set('Martial World')
-        self.combo_novel.pack(fill='x')
-        self.combo_novel.configure(foreground=TemaEscuro.TEXT_PRIMARY)
-        self.root.option_add('*TCombobox*Listbox.background', TemaEscuro.BG_SECUNDARIO)
-        self.root.option_add('*TCombobox*Listbox.foreground', TemaEscuro.TEXT_PRIMARY)
-        self.root.option_add('*TCombobox*Listbox.selectBackground', TemaEscuro.ACCENT_PRIMARY)
-        self.root.option_add('*TCombobox*Listbox.selectForeground', TemaEscuro.BG_PRINCIPAL)
-        
-        # === VOZ ===
-        voz_card = ttk.LabelFrame(controls_frame, text="🎙️ Voz", padding=10)
-        voz_card.pack(fill='x', pady=(0, 10))
-        
-        self.combo_voz = ttk.Combobox(voz_card, 
-                                      values=list(EngineNarracaoSimples.VOZES.keys()),
-                                      state='readonly', width=25)
-        self.combo_voz.set('Francisca')
-        self.combo_voz.pack(fill='x')
-        self.combo_voz.bind('<<ComboboxSelected>>', self.on_voz_alterada)
-        self.combo_voz.configure(foreground=TemaEscuro.TEXT_PRIMARY)
-        
-        # === NAVEGAÇÃO ===
-        nav_card = ttk.LabelFrame(controls_frame, text="🧭 Navegação", padding=10)
-        nav_card.pack(fill='x', pady=(0, 10))
-        
-        # Capítulo
-        ttk.Label(nav_card, text="📑 Capítulo:").pack(anchor='w', pady=(0, 5))
-        cap_frame = ttk.Frame(nav_card)
-        cap_frame.pack(fill='x', pady=(0, 10))
-        
-        self.btn_cap_anterior = ttk.Button(cap_frame, text="◄◄", width=4,
-                                          command=self.capitulo_anterior)
-        self.btn_cap_anterior.pack(side='left', padx=(0, 5))
-        
-        self.spin_capitulo = ttk.Spinbox(cap_frame, from_=1, to=2266, width=10,
-                                        command=self.on_capitulo_mudado)
-        self.spin_capitulo.set('961')
-        self.spin_capitulo.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        self.spin_capitulo.bind('<Return>', lambda e: self.on_capitulo_mudado())
-        self.spin_capitulo.bind('<FocusOut>', lambda e: self.on_capitulo_mudado())
-        
-        self.btn_cap_proximo = ttk.Button(cap_frame, text="►►", width=4,
-                                         command=self.capitulo_proximo)
-        self.btn_cap_proximo.pack(side='left')
-        
-        # Parágrafo
-        ttk.Label(nav_card, text="📄 Parágrafo:").pack(anchor='w', pady=(0, 5))
-        par_frame = ttk.Frame(nav_card)
-        par_frame.pack(fill='x', pady=(0, 10))
-        
-        self.btn_par_anterior = ttk.Button(par_frame, text="◄", width=4,
-                                          command=self.paragrafo_anterior)
-        self.btn_par_anterior.pack(side='left', padx=(0, 5))
-        
-        self.spin_paragrafo = ttk.Spinbox(par_frame, from_=1, to=999, width=10,
-                                         command=self.on_paragrafo_mudado)
-        self.spin_paragrafo.set('1')
-        self.spin_paragrafo.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        self.spin_paragrafo.bind('<Return>', lambda e: self.on_paragrafo_mudado())
-        self.spin_paragrafo.bind('<FocusOut>', lambda e: self.on_paragrafo_mudado())
-        
-        self.btn_par_proximo = ttk.Button(par_frame, text="►", width=4,
-                                         command=self.paragrafo_proximo)
-        self.btn_par_proximo.pack(side='left')
-        
-        # Progresso
-        prog_frame = ttk.Frame(nav_card)
-        prog_frame.pack(fill='x')
-        
-        ttk.Label(prog_frame, text="📊", font=('Segoe UI', 10)).pack(side='left', padx=(0, 5))
-        self.progress_capitulo = ttk.Progressbar(prog_frame, length=100, mode='determinate')
-        self.progress_capitulo.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        self.lbl_progress = ttk.Label(prog_frame, text="0%", width=4,
-                                     foreground=TemaEscuro.ACCENT_PRIMARY,
-                                     font=('Segoe UI', 9, 'bold'))
-        self.lbl_progress.pack(side='left')
-        
-        # === VOLUMES ===
-        vol_card = ttk.LabelFrame(controls_frame, text="🔊 Volume", padding=10)
-        vol_card.pack(fill='x', pady=(0, 10))
-        
-        # Narração
-        vol_nar_frame = ttk.Frame(vol_card)
-        vol_nar_frame.pack(fill='x', pady=(0, 10))
-        
-        self.lbl_icone_vol_nar = ttk.Label(vol_nar_frame, text="🔊", font=('Segoe UI', 10))
-        self.lbl_icone_vol_nar.pack(side='left', padx=(0, 5))
-        
-        ttk.Label(vol_nar_frame, text="Narração:", font=('Segoe UI', 9)).pack(side='left', padx=(0, 5))
-        
-        self.volume_narracao = ttk.Scale(vol_nar_frame, from_=0, to=100, orient='horizontal',
-                                        command=self.ajustar_volume_narracao)
-        self.volume_narracao.set(100)
-        self.volume_narracao.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        
-        self.lbl_vol_narracao = ttk.Label(vol_nar_frame, text="100%", width=4,
-                                         foreground=TemaEscuro.ACCENT_PRIMARY,
-                                         font=('Segoe UI', 9, 'bold'))
-        self.lbl_vol_narracao.pack(side='left')
-        
-        # Música
-        vol_mus_frame = ttk.Frame(vol_card)
-        vol_mus_frame.pack(fill='x')
-        
-        self.lbl_icone_vol_mus = ttk.Label(vol_mus_frame, text="🔊", font=('Segoe UI', 10))
-        self.lbl_icone_vol_mus.pack(side='left', padx=(0, 5))
-        
-        ttk.Label(vol_mus_frame, text="Música:", font=('Segoe UI', 9)).pack(side='left', padx=(0, 5))
-        
-        self.volume_musica = ttk.Scale(vol_mus_frame, from_=0, to=100, orient='horizontal',
-                                      command=self.ajustar_volume_musica)
-        self.volume_musica.set(30)
-        self.volume_musica.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        
-        self.lbl_vol_musica = ttk.Label(vol_mus_frame, text="30%", width=4,
-                                       foreground=TemaEscuro.ACCENT_SECONDARY,
-                                       font=('Segoe UI', 9, 'bold'))
-        self.lbl_vol_musica.pack(side='left')
-        
-        # === VELOCIDADE ===
-        vel_card = ttk.LabelFrame(controls_frame, text="⚡ Velocidade", padding=10)
-        vel_card.pack(fill='x', pady=(0, 10))
-        
-        # Botões de velocidade
-        btn_frame = ttk.Frame(vel_card)
-        btn_frame.pack(fill='x', pady=(0, 10))
-        
-        # Removido 3x pois estava igual a 2x devido a limitações do TTS
-        velocidades = [("0.5×", -50), ("1×", 0), ("1.25×", 25), 
-                      ("1.5×", 50), ("2×", 100)]
-        
-        for i, (texto, valor) in enumerate(velocidades):
-            btn = ttk.Button(btn_frame, text=texto, width=5,
-                           command=lambda v=valor: self.definir_velocidade_fixa(v))
-            btn.grid(row=i // 3, column=i % 3, padx=2, pady=2, sticky='ew')
-            btn_frame.grid_columnconfigure(i % 3, weight=1)
-        
-        ttk.Separator(vel_card, orient='horizontal').pack(fill='x', pady=10)
-        
-        ttk.Label(vel_card, text="Ajuste fino:", font=('Segoe UI', 8)).pack(anchor='w', pady=(0, 5))
-        
-        vel_frame = ttk.Frame(vel_card)
-        vel_frame.pack(fill='x')
-        
-        self.velocidade_narracao = ttk.Scale(vel_frame, from_=-50, to=100, orient='horizontal',
-                                            command=self.ajustar_velocidade_narracao)
-        self.velocidade_narracao.set(0)
-        self.velocidade_narracao.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        
-        self.lbl_velocidade = ttk.Label(vel_frame, text="1.00×", width=6,
-                                       foreground=TemaEscuro.ACCENT_WARNING,
-                                       font=('Segoe UI', 9, 'bold'))
-        self.lbl_velocidade.pack(side='left')
-        
-        # === MÚSICA ===
-        musica_card = ttk.LabelFrame(controls_frame, text="🎼 Música", padding=10)
-        musica_card.pack(fill='x', pady=(0, 10))
-        
-        btn_mus_frame = ttk.Frame(musica_card)
-        btn_mus_frame.pack(fill='x', pady=(0, 10))
-        
-        ttk.Button(btn_mus_frame, text="🎵 Tocar", command=self.musica_normal,
-                  width=10, style='Accent.TButton').pack(side='left', padx=(0, 5))
-        
-        self.btn_mutar = ttk.Button(btn_mus_frame, text="🔇",
-                                    command=self.toggle_mutar, width=3)
-        self.btn_mutar.pack(side='left')
-        
-        ttk.Label(musica_card, text="Música de Fundo:", font=('Segoe UI', 9)).pack(anchor='w', pady=(0, 5))
-        
-        self.combo_bgm = ttk.Combobox(musica_card, values=[], 
-                                      state='readonly', width=25,
-                                      style='BGM.TCombobox')
-        self.combo_bgm.pack(fill='x')
-        self.combo_bgm.bind('<<ComboboxSelected>>', self.on_bgm_selecionada)
-    
-    def toggle_controles(self):
-        """Esconde/mostra painel de controles."""
-        self.controles_visiveis = not self.controles_visiveis
-        
-        if self.controles_visiveis:
-            # Mostrar controles
-            self.frame_controles.grid()
-            self.btn_toggle_controles.config(text="▲ Esconder Controles")
-            # Remover botão flutuante se existir
-            if hasattr(self, 'btn_mostrar_flutuante'):
-                self.btn_mostrar_flutuante.place_forget()
-                self.btn_mostrar_flutuante.destroy()
-                delattr(self, 'btn_mostrar_flutuante')
-        else:
-            # Esconder controles
-            self.frame_controles.grid_remove()
-            self.btn_toggle_controles.config(text="▼ Mostrar Controles")
-            
-            # Criar botão flutuante para mostrar controles (sempre criar novo)
-            if hasattr(self, 'btn_mostrar_flutuante'):
-                self.btn_mostrar_flutuante.destroy()
-            
-            self.btn_mostrar_flutuante = ttk.Button(
-                self.root,
-                text="▼ Mostrar Controles",
-                command=self.toggle_controles,
-                width=20,
-                style='Accent.TButton'
-            )
-            
-            # Posicionar botão no topo da tela, centralizado
-            self.root.update_idletasks()  # Garantir que o tamanho está atualizado
-            window_width = self.root.winfo_width()
-            btn_x = max(10, window_width//2 - 80)  # Mínimo de 10px da borda
-            self.btn_mostrar_flutuante.place(x=btn_x, y=10)
-            self.btn_mostrar_flutuante.lift()  # Trazer para frente
-    
-    def criar_secao_controles(self, parent):
-        """Cria seção de controles expandida."""
-        # Frame principal dos controles
-        controls_frame = ttk.LabelFrame(parent, text="⚙️ Controles", padding=15)
-        controls_frame.pack(fill='both', expand=False)
-        # Grid simples e flexível
-        for i in range(7):
-            controls_frame.grid_columnconfigure(i, weight=1, minsize=80)
-        
-        # === LINHA 1: Seleção ===
-        # Novel
-        ttk.Label(controls_frame, text="📖 Novel:").grid(row=0, column=0, sticky='w', padx=(0, 5))
-        self.combo_novel = ttk.Combobox(controls_frame, values=['Martial World'], 
-                                        state='readonly', width=20)
-        self.combo_novel.set('Martial World')
-        self.combo_novel.grid(row=0, column=1, columnspan=2, sticky='ew', padx=(0, 15))
-        # Configurar cores após criar
-        self.combo_novel.configure(foreground=TemaEscuro.TEXT_PRIMARY)
-        self.root.option_add('*TCombobox*Listbox.background', TemaEscuro.BG_SECUNDARIO)
-        self.root.option_add('*TCombobox*Listbox.foreground', TemaEscuro.TEXT_PRIMARY)
-        self.root.option_add('*TCombobox*Listbox.selectBackground', TemaEscuro.ACCENT_PRIMARY)
-        self.root.option_add('*TCombobox*Listbox.selectForeground', TemaEscuro.BG_PRINCIPAL)
-        
-        # Voz
-        ttk.Label(controls_frame, text="🎙️ Voz:").grid(row=0, column=3, sticky='w', padx=(0, 5))
-        self.combo_voz = ttk.Combobox(controls_frame, 
-                                      values=list(EngineNarracaoSimples.VOZES.keys()),
-                                      state='readonly', width=15)
-        self.combo_voz.set('Francisca')
-        self.combo_voz.grid(row=0, column=4, columnspan=3, sticky='ew')
-        self.combo_voz.bind('<<ComboboxSelected>>', self.on_voz_alterada)
-        # Configurar cores após criar
-        self.combo_voz.configure(foreground=TemaEscuro.TEXT_PRIMARY)
-        
-        # === LINHA 2: Navegação ===
-        # Capítulo
-        ttk.Label(controls_frame, text="📑 Capítulo:").grid(row=1, column=0, sticky='w', 
-                                                           padx=(0, 5), pady=(10, 0))
-        cap_frame = ttk.Frame(controls_frame)
-        cap_frame.grid(row=1, column=1, columnspan=2, sticky='ew', pady=(10, 0), padx=(0, 15))
-        
-        self.btn_cap_anterior = ttk.Button(cap_frame, text="◄◄", width=4,
-                                          command=self.capitulo_anterior)
-        self.btn_cap_anterior.pack(side='left', padx=(0, 5))
-        
-        self.spin_capitulo = ttk.Spinbox(cap_frame, from_=1, to=2266, width=10,
-                                        command=self.on_capitulo_mudado)
-        self.spin_capitulo.set('961')
-        self.spin_capitulo.pack(side='left', padx=(0, 5))
-        self.spin_capitulo.bind('<Return>', lambda e: self.on_capitulo_mudado())
-        self.spin_capitulo.bind('<FocusOut>', lambda e: self.on_capitulo_mudado())
-        
-        self.btn_cap_proximo = ttk.Button(cap_frame, text="►►", width=4,
-                                         command=self.capitulo_proximo)
-        self.btn_cap_proximo.pack(side='left')
-        
-        # Parágrafo
-        ttk.Label(controls_frame, text="📄 Parágrafo:").grid(row=1, column=3, sticky='w',
-                                                            padx=(0, 5), pady=(10, 0))
-        par_frame = ttk.Frame(controls_frame)
-        par_frame.grid(row=1, column=4, columnspan=2, sticky='ew', pady=(10, 0), padx=(0, 5))
-        
-        self.btn_par_anterior = ttk.Button(par_frame, text="◄", width=4,
-                                          command=self.paragrafo_anterior)
-        self.btn_par_anterior.pack(side='left', padx=(0, 5))
-        
-        self.spin_paragrafo = ttk.Spinbox(par_frame, from_=1, to=999, width=10,
-                                         command=self.on_paragrafo_mudado)
-        self.spin_paragrafo.set('1')
-        self.spin_paragrafo.pack(side='left', padx=(0, 5))
-        self.spin_paragrafo.bind('<Return>', lambda e: self.on_paragrafo_mudado())
-        self.spin_paragrafo.bind('<FocusOut>', lambda e: self.on_paragrafo_mudado())
-        
-        self.btn_par_proximo = ttk.Button(par_frame, text="►", width=4,
-                                         command=self.paragrafo_proximo)
-        self.btn_par_proximo.pack(side='left')
-        
-        # Barra de progresso do capítulo (linha própria)
-        prog_frame = ttk.Frame(controls_frame)
-        prog_frame.grid(row=1, column=6, sticky='ew', pady=(10, 0))
-        
-        ttk.Label(prog_frame, text="📊", font=('Segoe UI', 10)).pack(side='left', padx=(5, 2))
-        self.progress_capitulo = ttk.Progressbar(prog_frame, length=100, mode='determinate')
-        self.progress_capitulo.pack(side='left', fill='x', expand=True, padx=2)
-        self.lbl_progress = ttk.Label(prog_frame, text="0%", width=4,
-                                     foreground=TemaEscuro.ACCENT_PRIMARY,
-                                     font=('Segoe UI', 9, 'bold'))
-        self.lbl_progress.pack(side='left', padx=(2, 0))
-        
-        # === LINHA 3: Volumes ===
-        # Volume Narração
-        vol_nar_container = ttk.Frame(controls_frame)
-        vol_nar_container.grid(row=2, column=0, columnspan=3, sticky='ew', pady=(10, 0))
-        
-        self.lbl_icone_vol_nar = ttk.Label(vol_nar_container, text="🔊", font=('Segoe UI', 12))
-        self.lbl_icone_vol_nar.pack(side='left', padx=(0, 3))
-        
-        ttk.Label(vol_nar_container, text="Narração:", font=('Segoe UI', 9)).pack(side='left', padx=(0, 3))
-        
-        vol_nar_frame = ttk.Frame(vol_nar_container)
-        vol_nar_frame.pack(side='left', fill='x', expand=True)
-        
-        self.volume_narracao = ttk.Scale(vol_nar_frame, from_=0, to=100, orient='horizontal',
-                                        command=self.ajustar_volume_narracao)
-        self.volume_narracao.set(100)
-        self.volume_narracao.pack(side='left', fill='x', expand=True)
-        
-        self.lbl_vol_narracao = ttk.Label(vol_nar_frame, text="100%", width=6,
-                                         foreground=TemaEscuro.ACCENT_PRIMARY,
-                                         font=('Segoe UI', 9, 'bold'))
-        self.lbl_vol_narracao.pack(side='left', padx=(5, 0))
-        
-        # Volume Música
-        vol_mus_container = ttk.Frame(controls_frame)
-        vol_mus_container.grid(row=2, column=3, columnspan=4, sticky='ew', pady=(10, 0))
-        
-        self.lbl_icone_vol_mus = ttk.Label(vol_mus_container, text="🔊", font=('Segoe UI', 12))
-        self.lbl_icone_vol_mus.pack(side='left', padx=(0, 3))
-        
-        ttk.Label(vol_mus_container, text="Música:", font=('Segoe UI', 9)).pack(side='left', padx=(0, 3))
-        
-        vol_mus_frame = ttk.Frame(vol_mus_container)
-        vol_mus_frame.pack(side='left', fill='x', expand=True)
-        
-        self.volume_musica = ttk.Scale(vol_mus_frame, from_=0, to=100, orient='horizontal',
-                                      command=self.ajustar_volume_musica)
-        self.volume_musica.set(30)
-        self.volume_musica.pack(side='left', fill='x', expand=True)
-        
-        self.lbl_vol_musica = ttk.Label(vol_mus_frame, text="30%", width=6,
-                                       foreground=TemaEscuro.ACCENT_SECONDARY,
-                                       font=('Segoe UI', 9, 'bold'))
-        self.lbl_vol_musica.pack(side='left', padx=(5, 0))
-        
-        # === LINHA 4: Velocidade ===
-        # Botões de velocidade fixa
-        vel_btns_container = ttk.Frame(controls_frame)
-        vel_btns_container.grid(row=3, column=0, columnspan=7, sticky='ew', pady=(10, 0))
-        
-        ttk.Label(vel_btns_container, text="⚡ Velocidade:", font=('Segoe UI', 9)).pack(side='left', padx=(0, 8))
-        
-        # Botões de velocidade pré-definidas (removido 3× pois estava igual a 2×)
-        # Valores mapeados corretamente: 0.5× = -50%, 1× = 0%, 1.25× = 25%, 1.5× = 50%, 2× = 100%
-        velocidades = [
-            ("0.5×", -50),
-            ("1×", 0),
-            ("1.25×", 25),
-            ("1.5×", 50),
-            ("2×", 100)
-        ]
-        
-        for texto, valor in velocidades:
-            btn = ttk.Button(vel_btns_container, text=texto, width=5,
-                           command=lambda v=valor: self.definir_velocidade_fixa(v))
-            btn.pack(side='left', padx=2)
-        
-        ttk.Separator(vel_btns_container, orient='vertical').pack(side='left', fill='y', padx=8)
-        
-        ttk.Label(vel_btns_container, text="Ajuste fino:", font=('Segoe UI', 8)).pack(side='left', padx=(0, 3))
-        
-        # Barra de ajuste fino
-        vel_frame = ttk.Frame(vel_btns_container)
-        vel_frame.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        
-        self.velocidade_narracao = ttk.Scale(vel_frame, from_=-50, to=100, orient='horizontal',
-                                            command=self.ajustar_velocidade_narracao)
-        self.velocidade_narracao.set(0)
-        self.velocidade_narracao.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        
-        self.lbl_velocidade = ttk.Label(vel_frame, text="1.00×", width=6,
-                                       foreground=TemaEscuro.ACCENT_WARNING,
-                                       font=('Segoe UI', 9, 'bold'))
-        self.lbl_velocidade.pack(side='left', padx=(5, 0))
-        
-        # === LINHA 5: Música ===
-        musica_frame = ttk.Frame(controls_frame)
-        musica_frame.grid(row=4, column=0, columnspan=7, sticky='ew', pady=(10, 0))
-        
-        ttk.Label(musica_frame, text="🎼", font=('Segoe UI', 10)).pack(side='left', padx=(0, 5))
-        
-        # Botão tocar música
-        ttk.Button(musica_frame, text="🎵", command=self.musica_normal,
-                  width=4, style='Accent.TButton').pack(side='left', padx=(0, 8))
-        ttk.Label(musica_frame, text="Música de Fundo:", 
-                 font=('Segoe UI', 10, 'bold'),
-                 foreground=TemaEscuro.ACCENT_PRIMARY).pack(side='left', padx=(0, 5))
-        
-        # Combobox BGM - Único
-        self.combo_bgm = ttk.Combobox(musica_frame, values=[], 
-                                      state='readonly', width=35,
-                                      style='BGM.TCombobox')
-        self.combo_bgm.pack(side='left', padx=(0, 15))
-        self.combo_bgm.bind('<<ComboboxSelected>>', self.on_bgm_selecionada)
-        
-        # Botão mutar (apenas ícone)
-        self.btn_mutar = ttk.Button(musica_frame, text="🔇",
-                                    command=self.toggle_mutar, width=3)
-        self.btn_mutar.pack(side='left', padx=5)
-    
+                                     padx=12, pady=4, relief='flat', borderwidth=0)
+        self.status_badge.grid(row=0, column=2, sticky='e', padx=(0, 8))
+
+        ttk.Button(self.header_frame, text="⚙️", width=3,
+                   command=self.toggle_drawer).grid(row=0, column=3, sticky='e')
+
     def criar_area_visualizacao(self, parent):
-        """Cria área de visualização do texto com highlight."""
-        viz_frame = ttk.LabelFrame(parent, text="📖 Texto", padding=15)
-        viz_frame.grid(row=0, column=0, sticky='nsew', pady=(0, 10))
-        viz_frame.grid_rowconfigure(0, weight=1)
-        viz_frame.grid_columnconfigure(0, weight=1)
-        
-        # Frame interno para texto e scrollbar
-        text_container = ttk.Frame(viz_frame)
+        """Área de leitura em tela cheia."""
+        text_container = ttk.Frame(parent)
         text_container.grid(row=0, column=0, sticky='nsew')
         text_container.grid_rowconfigure(0, weight=1)
         text_container.grid_columnconfigure(0, weight=1)
-        
-        # Text widget com tema escuro
-        self.text_paragrafo = tk.Text(text_container,
-                                      wrap='word',
-                                      font=('Segoe UI', 11),
-                                      bg=TemaEscuro.BG_SECUNDARIO,
-                                      fg=TemaEscuro.TEXT_PRIMARY,
-                                      insertbackground=TemaEscuro.ACCENT_PRIMARY,
-                                      selectbackground=TemaEscuro.ACCENT_PRIMARY,
-                                      selectforeground=TemaEscuro.BG_PRINCIPAL,
-                                      relief='flat',
-                                      borderwidth=0,
-                                      padx=15,
-                                      pady=15,
-                                      spacing1=5,
-                                      spacing3=5,
-                                      state='disabled')
+
+        self.text_paragrafo = tk.Text(
+            text_container, wrap='word',
+            font=('Segoe UI', self.config_texto.get('tamanho_fonte', 13)),
+            bg=TemaEscuro.BG_SECUNDARIO, fg=TemaEscuro.TEXT_PRIMARY,
+            insertbackground=TemaEscuro.ACCENT_PRIMARY,
+            selectbackground=TemaEscuro.ACCENT_PRIMARY,
+            selectforeground=TemaEscuro.BG_PRINCIPAL,
+            relief='flat', borderwidth=0,
+            padx=60, pady=30, spacing1=6, spacing3=10,
+            cursor='hand2', state='disabled')
         self.text_paragrafo.grid(row=0, column=0, sticky='nsew')
-        
-        # Bind para clicar no texto
         self.text_paragrafo.bind('<Button-1>', self.on_texto_clicado)
-        
-        # Scrollbar
+
         scrollbar = ttk.Scrollbar(text_container, command=self.text_paragrafo.yview)
         scrollbar.grid(row=0, column=1, sticky='ns')
         self.text_paragrafo.config(yscrollcommand=scrollbar.set)
-        
-        # Contador de tempo
-        time_frame = ttk.Frame(viz_frame)
-        time_frame.grid(row=1, column=0, sticky='ew', pady=(10, 0))
-        
-        self.lbl_tempo_narracao = ttk.Label(time_frame,
-                                            text="⏱️ Tempo de narração: 00:00:00",
+
+    # ===== Barra de player flutuante =====
+    def criar_barra_player(self):
+        """Barra minimalista flutuante com navegação, play e velocidade."""
+        bar = tk.Frame(self.root, bg=TemaEscuro.BG_CARD,
+                       highlightbackground=TemaEscuro.BORDER, highlightthickness=1)
+        self.barra_player = bar
+        pad = {'padx': 3, 'pady': 6}
+
+        def separador():
+            tk.Frame(bar, bg=TemaEscuro.BORDER, width=1).pack(side='left', fill='y', padx=6, pady=8)
+
+        self.btn_cap_anterior = ttk.Button(bar, text="⏮", width=3, command=self.capitulo_anterior)
+        self.btn_cap_anterior.pack(side='left', **pad)
+        self.criar_tooltip(self.btn_cap_anterior, "Capítulo anterior (Shift+←)")
+
+        self.spin_capitulo = ttk.Spinbox(bar, from_=1, to=2266, width=6,
+                                         command=self.on_capitulo_mudado)
+        self.spin_capitulo.set('961')
+        self.spin_capitulo.pack(side='left', **pad)
+        self.spin_capitulo.bind('<Return>', lambda e: self.on_capitulo_mudado())
+        self.spin_capitulo.bind('<FocusOut>', lambda e: self.on_capitulo_mudado())
+
+        self.btn_cap_proximo = ttk.Button(bar, text="⏭", width=3, command=self.capitulo_proximo)
+        self.btn_cap_proximo.pack(side='left', **pad)
+        self.criar_tooltip(self.btn_cap_proximo, "Próximo capítulo (Shift+→)")
+
+        separador()
+
+        self.btn_par_anterior = ttk.Button(bar, text="◄", width=3, command=self.paragrafo_anterior)
+        self.btn_par_anterior.pack(side='left', **pad)
+
+        self.btn_play_pause = ttk.Button(bar, text="▶️", width=4, style='Accent.TButton',
+                                         command=self.toggle_narracao)
+        self.btn_play_pause.pack(side='left', **pad)
+        self.criar_tooltip(self.btn_play_pause, "Reproduzir / Pausar (Espaço)")
+
+        self.btn_par_proximo = ttk.Button(bar, text="►", width=3, command=self.paragrafo_proximo)
+        self.btn_par_proximo.pack(side='left', **pad)
+
+        self.btn_stop = ttk.Button(bar, text="⏹", width=3, style='Danger.TButton',
+                                   command=self.parar_narracao_completa)
+        self.btn_stop.pack(side='left', **pad)
+
+        # Spinbox de parágrafo (compacto)
+        self.spin_paragrafo = ttk.Spinbox(bar, from_=1, to=999, width=5,
+                                          command=self.on_paragrafo_mudado)
+        self.spin_paragrafo.set('1')
+        self.spin_paragrafo.pack(side='left', **pad)
+        self.spin_paragrafo.bind('<Return>', lambda e: self.on_paragrafo_mudado())
+        self.spin_paragrafo.bind('<FocusOut>', lambda e: self.on_paragrafo_mudado())
+
+        separador()
+
+        # Chips de velocidade
+        self.botoes_velocidade = {}
+        for texto, val in [("0.5×", 0.5), ("1×", 1.0), ("1.5×", 1.5),
+                           ("2×", 2.0), ("2.5×", 2.5), ("3×", 3.0)]:
+            b = ttk.Button(bar, text=texto, width=4,
+                           command=lambda v=val: self.definir_velocidade_fixa(v))
+            b.pack(side='left', padx=1, pady=6)
+            self.botoes_velocidade[val] = b
+
+        separador()
+
+        # Progresso do capítulo
+        self.progress_capitulo = ttk.Progressbar(bar, length=120, mode='determinate')
+        self.progress_capitulo.pack(side='left', padx=(4, 2), pady=6)
+        self.lbl_progress = tk.Label(bar, text="0%", width=4, bg=TemaEscuro.BG_CARD,
+                                     fg=TemaEscuro.ACCENT_PRIMARY, font=('Segoe UI', 9, 'bold'))
+        self.lbl_progress.pack(side='left', padx=(0, 4))
+
+        separador()
+
+        btn_imersivo = ttk.Button(bar, text="⛶", width=3, command=self.toggle_imersivo)
+        btn_imersivo.pack(side='left', **pad)
+        self.criar_tooltip(btn_imersivo, "Modo imersivo total (F)")
+        ttk.Button(bar, text="⚙️", width=3, command=self.toggle_drawer).pack(side='left', **pad)
+
+        bar.bind('<Enter>', lambda e: self._cancelar_esconder())
+        bar.bind('<Leave>', lambda e: self._agendar_esconder_barra())
+
+        self._barra_visivel = True
+        self._posicionar_barra()
+
+    # ===== Drawer lateral de ajustes rápidos =====
+    def criar_drawer(self):
+        """Painel lateral deslizante com voz, velocidade, volumes, música e aparência."""
+        self.drawer = tk.Frame(self.root, bg=TemaEscuro.BG_CARD,
+                               highlightbackground=TemaEscuro.BORDER, highlightthickness=1)
+        cont = ttk.Frame(self.drawer, padding=16)
+        cont.pack(fill='both', expand=True)
+
+        def secao(txt):
+            ttk.Label(cont, text=txt, font=('Segoe UI', 10, 'bold'),
+                      foreground=TemaEscuro.ACCENT_PRIMARY).pack(anchor='w', pady=(12, 4))
+
+        top = ttk.Frame(cont)
+        top.pack(fill='x')
+        ttk.Label(top, text="⚙️ Ajustes rápidos", font=('Segoe UI', 12, 'bold'),
+                  foreground=TemaEscuro.ACCENT_SECONDARY).pack(side='left')
+        ttk.Button(top, text="✕", width=3, command=self._fechar_drawer).pack(side='right')
+
+        # Voz
+        secao("🎙️ Voz")
+        self.combo_voz = ttk.Combobox(cont, values=list(EngineNarracaoSimples.VOZES.keys()),
+                                      state='readonly')
+        self.combo_voz.set('Francisca')
+        self.combo_voz.pack(fill='x')
+        self.combo_voz.bind('<<ComboboxSelected>>', self.on_voz_alterada)
+
+        # Velocidade
+        secao("⚡ Velocidade (0.5×–3×)")
+        velf = ttk.Frame(cont)
+        velf.pack(fill='x')
+        self.velocidade_narracao = ttk.Scale(velf, from_=0.5, to=3.0, orient='horizontal',
+                                             command=self.ajustar_velocidade_narracao)
+        self.velocidade_narracao.set(1.0)
+        self.velocidade_narracao.pack(side='left', fill='x', expand=True)
+        self.lbl_velocidade = ttk.Label(velf, text="1.00×", width=6,
+                                        foreground=TemaEscuro.ACCENT_WARNING,
+                                        font=('Segoe UI', 9, 'bold'))
+        self.lbl_velocidade.pack(side='left', padx=(6, 0))
+
+        # Volume da narração
+        secao("🔊 Volume da narração")
+        vnf = ttk.Frame(cont)
+        vnf.pack(fill='x')
+        self.lbl_icone_vol_nar = ttk.Label(vnf, text="🔊", font=('Segoe UI', 12))
+        self.lbl_icone_vol_nar.pack(side='left', padx=(0, 4))
+        self.volume_narracao = ttk.Scale(vnf, from_=0, to=100, orient='horizontal',
+                                         command=self.ajustar_volume_narracao)
+        self.volume_narracao.set(100)
+        self.volume_narracao.pack(side='left', fill='x', expand=True)
+        self.lbl_vol_narracao = ttk.Label(vnf, text="100%", width=5,
+                                          foreground=TemaEscuro.ACCENT_PRIMARY,
+                                          font=('Segoe UI', 9, 'bold'))
+        self.lbl_vol_narracao.pack(side='left', padx=(6, 0))
+
+        # Música de fundo
+        secao("🎼 Música de fundo")
+        vmf = ttk.Frame(cont)
+        vmf.pack(fill='x')
+        self.lbl_icone_vol_mus = ttk.Label(vmf, text="🔊", font=('Segoe UI', 12))
+        self.lbl_icone_vol_mus.pack(side='left', padx=(0, 4))
+        self.volume_musica = ttk.Scale(vmf, from_=0, to=100, orient='horizontal',
+                                       command=self.ajustar_volume_musica)
+        self.volume_musica.set(30)
+        self.volume_musica.pack(side='left', fill='x', expand=True)
+        self.lbl_vol_musica = ttk.Label(vmf, text="30%", width=5,
+                                        foreground=TemaEscuro.ACCENT_SECONDARY,
+                                        font=('Segoe UI', 9, 'bold'))
+        self.lbl_vol_musica.pack(side='left', padx=(6, 0))
+
+        bgmf = ttk.Frame(cont)
+        bgmf.pack(fill='x', pady=(6, 0))
+        ttk.Button(bgmf, text="🎵", width=3, style='Accent.TButton',
+                   command=self.musica_normal).pack(side='left', padx=(0, 4))
+        self.combo_bgm = ttk.Combobox(bgmf, values=[], state='readonly', style='BGM.TCombobox')
+        self.combo_bgm.pack(side='left', fill='x', expand=True)
+        self.combo_bgm.bind('<<ComboboxSelected>>', self.on_bgm_selecionada)
+        self.btn_mutar = ttk.Button(bgmf, text="🔇", width=3, command=self.toggle_mutar)
+        self.btn_mutar.pack(side='left', padx=(4, 0))
+
+        # Aparência
+        secao("🎨 Aparência")
+        palf = ttk.Frame(cont)
+        palf.pack(fill='x')
+        for nome, key in [("Padrão", "padrao"), ("Sépia", "sepia"),
+                          ("Noite", "noite"), ("Papel", "papel")]:
+            ttk.Button(palf, text=nome, width=7,
+                       command=lambda k=key: self._aplicar_paleta(k)).pack(side='left', padx=2)
+        fontf = ttk.Frame(cont)
+        fontf.pack(fill='x', pady=(6, 0))
+        ttk.Label(fontf, text="Fonte", font=('Segoe UI', 9)).pack(side='left', padx=(0, 6))
+        self.slider_fonte = ttk.Scale(fontf, from_=10, to=26, orient='horizontal',
+                                      command=self._ajustar_fonte)
+        self.slider_fonte.set(self.config_texto.get('tamanho_fonte', 13))
+        self.slider_fonte.pack(side='left', fill='x', expand=True)
+
+        # Leitura
+        secao("📖 Leitura")
+        self.btn_modo_leitura = ttk.Button(cont, text="Ver só o parágrafo atual",
+                                           command=self.toggle_modo_leitura)
+        self.btn_modo_leitura.pack(fill='x')
+
+        # Tempo
+        secao("⏱️ Tempo")
+        self.lbl_tempo_narracao = ttk.Label(cont, text="⏱️ Tempo de narração: 00:00:00",
                                             font=('Segoe UI', 9),
                                             foreground=TemaEscuro.TEXT_SECONDARY)
-        self.lbl_tempo_narracao.pack(side='left', padx=(0, 20))
-        
-        self.lbl_tempo_estimado = ttk.Label(time_frame,
-                                            text="⏳ Tempo estimado: --:--",
+        self.lbl_tempo_narracao.pack(anchor='w')
+        self.lbl_tempo_estimado = ttk.Label(cont, text="⏳ Tempo estimado: --:--",
                                             font=('Segoe UI', 9),
                                             foreground=TemaEscuro.TEXT_SECONDARY)
-        self.lbl_tempo_estimado.pack(side='left')
-    
-    def criar_controles_playback(self, parent):
-        """Cria controles de playback principais."""
-        playback_frame = ttk.Frame(parent, padding=10)
-        playback_frame.grid(row=1, column=0, sticky='ew', pady=(0, 10))
-        
-        # Centralizar botões
-        btn_container = ttk.Frame(playback_frame)
-        btn_container.pack(expand=True)
-        
-        # Botão Play/Pause (destaque maior)
-        self.btn_play_pause = ttk.Button(btn_container,
-                                        text="▶️  INICIAR NARRAÇÃO",
-                                        command=self.toggle_narracao,
-                                        style='Accent.TButton',
-                                        width=30)
-        self.btn_play_pause.pack(side='left', padx=5)
-        
-        # Botão Parar
-        self.btn_stop = ttk.Button(btn_container,
-                                   text="⏹️  Parar",
-                                   command=self.parar_narracao_completa,
-                                   style='Danger.TButton',
-                                   width=15)
-        self.btn_stop.pack(side='left', padx=5)
-        self.criar_tooltip(self.btn_stop, "Para completamente a narração")
-        
-        # Botão Reiniciar Capítulo
-        btn_reiniciar = ttk.Button(btn_container,
-                                   text="🔄 Reiniciar Cap.",
-                                   command=self.reiniciar_capitulo,
-                                   width=15)
-        btn_reiniciar.pack(side='left', padx=5)
-        self.criar_tooltip(btn_reiniciar, "Volta ao início do capítulo atual")
-        
-        # Botão Modo Leitura
-        self.btn_modo_leitura = ttk.Button(btn_container,
-                                          text="📖 Modo Leitura",
-                                          command=self.toggle_modo_leitura,
-                                          width=15)
-        self.btn_modo_leitura.pack(side='left', padx=5)
-        self.criar_tooltip(self.btn_modo_leitura, "Foca apenas no texto do capítulo")
-    
-    def criar_rodape(self, parent):
-        """Cria rodapé com ações e informações."""
-        footer_frame = ttk.Frame(parent)
-        footer_frame.grid(row=3, column=0, sticky='ew')
-        footer_frame.grid_columnconfigure(1, weight=1)
-        
-        # Botão Sair
-        ttk.Button(footer_frame,
-                  text="💾 Salvar e Sair",
-                  command=self.sair,
-                  style='Success.TButton',
-                  width=20).grid(row=0, column=0, sticky='w')
-        
-        # Info de versão
-        ttk.Label(footer_frame,
-                 text="Novel Reader v2.0 - Tema Escuro Moderno",
-                 font=('Segoe UI', 8),
-                 foreground=TemaEscuro.TEXT_MUTED).grid(row=0, column=1, sticky='e')
-    
+        self.lbl_tempo_estimado.pack(anchor='w')
+
+        ttk.Separator(cont, orient='horizontal').pack(fill='x', pady=10)
+        ttk.Button(cont, text="Mais configurações…",
+                   command=self.abrir_configuracoes).pack(fill='x')
+        ttk.Button(cont, text="💾 Salvar e sair", style='Success.TButton',
+                   command=self.sair).pack(fill='x', pady=(6, 0))
+
+    # ===== Posicionamento / auto-hide dos overlays =====
+    def _posicionar_barra(self):
+        if hasattr(self, 'barra_player'):
+            self.barra_player.place(relx=0.5, rely=1.0, y=-14, anchor='s')
+            self.barra_player.lift()
+
+    def _mostrar_barra(self):
+        self._barra_visivel = True
+        self._posicionar_barra()
+
+    def _esconder_barra(self):
+        self._barra_timer = None
+        # Nunca esconder com o drawer aberto
+        if getattr(self, 'drawer_aberto', False):
+            return
+        if hasattr(self, 'barra_player'):
+            self.barra_player.place_forget()
+        self._barra_visivel = False
+
+    def _cancelar_esconder(self):
+        if getattr(self, '_barra_timer', None):
+            self.root.after_cancel(self._barra_timer)
+            self._barra_timer = None
+
+    def _agendar_esconder_barra(self):
+        self._cancelar_esconder()
+        self._barra_timer = self.root.after(2800, self._esconder_barra)
+
+    def _on_mouse_activity(self, event=None):
+        if not getattr(self, '_barra_visivel', False):
+            self._mostrar_barra()
+        self._agendar_esconder_barra()
+
+    def toggle_drawer(self):
+        if getattr(self, 'drawer_aberto', False):
+            self._fechar_drawer()
+        else:
+            self.drawer.place(relx=1.0, rely=0, anchor='ne', relheight=1.0, width=340)
+            self.drawer.lift()
+            self.drawer_aberto = True
+            self._mostrar_barra()
+            self._cancelar_esconder()
+
+    def _fechar_drawer(self):
+        self.drawer.place_forget()
+        self.drawer_aberto = False
+        self._agendar_esconder_barra()
+
+    def toggle_imersivo(self):
+        self.imersivo_total = not self.imersivo_total
+        if self.imersivo_total:
+            self.header_frame.grid_remove()
+        else:
+            self.header_frame.grid()
+        self._posicionar_barra()
+
+    # ===== Atalhos de teclado =====
+    def _foco_em_campo(self):
+        w = self.root.focus_get()
+        return isinstance(w, (tk.Entry, ttk.Entry, ttk.Spinbox, ttk.Combobox, tk.Spinbox))
+
+    def _registrar_atalhos(self):
+        r = self.root
+        r.bind('<space>', self._atalho_play)
+        r.bind('<Left>', lambda e: None if self._foco_em_campo() else self.paragrafo_anterior())
+        r.bind('<Right>', lambda e: None if self._foco_em_campo() else self.paragrafo_proximo())
+        r.bind('<Shift-Left>', lambda e: self.capitulo_anterior())
+        r.bind('<Shift-Right>', lambda e: self.capitulo_proximo())
+        r.bind('<Up>', lambda e: self._passo_velocidade(0.25))
+        r.bind('<Down>', lambda e: self._passo_velocidade(-0.25))
+        for k in ('<r>', '<R>'):
+            r.bind(k, lambda e: self.reiniciar_capitulo())
+        for k in ('<c>', '<C>'):
+            r.bind(k, lambda e: None if self._foco_em_campo() else self.toggle_drawer())
+        for k in ('<f>', '<F>'):
+            r.bind(k, lambda e: None if self._foco_em_campo() else self.toggle_imersivo())
+        r.bind('<Escape>', self._atalho_escape)
+        r.bind('<Home>', lambda e: self.reiniciar_capitulo())
+
+    def _atalho_play(self, event=None):
+        if self._foco_em_campo():
+            return
+        self.toggle_narracao()
+        return 'break'
+
+    def _atalho_escape(self, event=None):
+        if getattr(self, 'drawer_aberto', False):
+            self._fechar_drawer()
+        elif self.imersivo_total:
+            self.toggle_imersivo()
+
+    def _passo_velocidade(self, delta):
+        novo = max(0.5, min(3.0, round((self.velocidade_mult + delta) * 100) / 100))
+        self.definir_velocidade_fixa(novo)
+
+    # ===== Aparência via drawer =====
+    def _aplicar_paleta(self, key):
+        self.config_texto['paleta'] = key
+        self.salvar_config_texto()
+        self.aplicar_estilo_texto()
+        if self.modo_leitura and self.conteudo_capitulo:
+            self.atualizar_display_modo_leitura()
+
+    def _ajustar_fonte(self, valor):
+        try:
+            tam = int(float(valor))
+            self.config_texto['tamanho_fonte'] = tam
+            self.aplicar_estilo_texto()
+        except (ValueError, TypeError):
+            pass
+
     def ajustar_layout_responsivo(self):
         """Ajusta layout baseado no tamanho da janela."""
         if self.modo_compacto:
@@ -1323,79 +1129,70 @@ class NovelReaderGUI:
             self.spin_capitulo.config(from_=min(self.capitulos_disponiveis),
                                      to=max(self.capitulos_disponiveis))
     
+    def _cor_highlight(self):
+        """Cor de destaque do parágrafo atual conforme a paleta."""
+        return {
+            'padrao': '#3d3d52',
+            'sepia': '#e6d3a3',
+            'noite': '#1f3350',
+            'papel': '#dfe7c8',
+        }.get(self.config_texto.get('paleta', 'padrao'), '#3d3d52')
+
     def atualizar_display(self, texto):
         """Atualiza o texto do parágrafo atual."""
         if self.modo_leitura:
-            # No modo leitura, manter capítulo completo e dar highlight
-            self.atualizar_display_modo_leitura()
+            # No modo leitura só movemos o highlight (sem reconstruir o widget)
+            self._mover_highlight(self.paragrafo_atual)
         else:
             # Modo normal: mostrar apenas o parágrafo atual
             self.text_paragrafo.config(state='normal')
             self.text_paragrafo.delete('1.0', 'end')
             self.text_paragrafo.insert('1.0', texto)
             self.text_paragrafo.config(state='disabled')
-            
-            # Aplicar estilo de texto
             self.aplicar_estilo_texto()
-    
-    def atualizar_display_modo_leitura(self):
-        """Atualiza display no modo leitura com highlight do parágrafo atual."""
+
+    def atualizar_display_modo_leitura(self, force=False):
+        """Renderiza o capítulo inteiro (só reconstrói quando o capítulo muda)."""
         if not self.conteudo_capitulo:
             return
-        
+
+        # Se o capítulo já está renderizado, apenas mover o highlight (barato)
+        if not force and getattr(self, '_cap_renderizado', None) == self.capitulo_atual:
+            self._mover_highlight(self.paragrafo_atual)
+            return
+
         self.text_paragrafo.config(state='normal')
         self.text_paragrafo.delete('1.0', tk.END)
-        
-        # Inserir todos os parágrafos
+        self._par_starts = {}
+
         for i, paragrafo in enumerate(self.conteudo_capitulo, 1):
-            # Tag para o parágrafo inteiro
-            tag_paragrafo = f'paragrafo_{i}'
-            
-            # Número do parágrafo
             self.text_paragrafo.insert(tk.END, f"[{i}] ", 'paragrafo_num')
-            
-            # Texto do parágrafo
             inicio = self.text_paragrafo.index(tk.END + '-1c')
             self.text_paragrafo.insert(tk.END, paragrafo + "\n\n")
             fim = self.text_paragrafo.index(tk.END + '-1c')
-            
-            # Adicionar tag ao parágrafo
-            self.text_paragrafo.tag_add(tag_paragrafo, inicio, fim)
-        
-        # Configurar tags
-        self.text_paragrafo.tag_config('paragrafo_num', 
+            self.text_paragrafo.tag_add(f'paragrafo_{i}', inicio, fim)
+            self._par_starts[i] = inicio
+
+        self.text_paragrafo.tag_config('paragrafo_num',
                                        foreground=TemaEscuro.ACCENT_SECONDARY,
                                        font=('Segoe UI', 9, 'bold'))
-        
-        # Remover highlight anterior (resetar apenas background)
-        for tag in self.text_paragrafo.tag_names():
-            if tag.startswith('paragrafo_'):
-                self.text_paragrafo.tag_config(tag, background='')
-        
-        # Definir cor de highlight baseada na paleta
-        paleta = self.config_texto.get('paleta', 'padrao')
-        highlights_por_paleta = {
-            'padrao': '#3d3d52',   # Cinza azulado sutil
-            'sepia': '#ffffff',    # Branco
-            'noite': '#3d3d52',    # Cinza azulado sutil
-            'papel': '#e0e0e0'     # Cinza claro
-        }
-        cor_highlight = highlights_por_paleta.get(paleta, '#3d3d52')
-        
-        # Highlight do parágrafo atual (apenas background, preserva cor da fonte)
-        tag_atual = f'paragrafo_{self.paragrafo_atual}'
-        self.text_paragrafo.tag_config(tag_atual, 
-                                       background=cor_highlight)
-        
-        # Auto-scroll para o parágrafo atual
-        # Calcular linha aproximada (cada parágrafo é ~2 linhas)
-        linha_aprox = (self.paragrafo_atual - 1) * 2 + 1
-        self.text_paragrafo.see(f"{linha_aprox}.0")
-        
         self.text_paragrafo.config(state='disabled')
-        
-        # Aplicar estilo de texto
+        self._cap_renderizado = self.capitulo_atual
         self.aplicar_estilo_texto()
+        self._mover_highlight(self.paragrafo_atual)
+
+    def _mover_highlight(self, novo_par):
+        """Move o destaque para o parágrafo dado sem reconstruir o texto."""
+        if not getattr(self, '_par_starts', None):
+            return
+        cor = self._cor_highlight()
+        for tag in self.text_paragrafo.tag_names():
+            if tag.startswith('paragrafo_') and tag != 'paragrafo_num':
+                self.text_paragrafo.tag_config(tag, background='')
+        tag_atual = f'paragrafo_{novo_par}'
+        if novo_par in self._par_starts:
+            self.text_paragrafo.tag_config(tag_atual, background=cor)
+            self.text_paragrafo.see(self._par_starts[novo_par])
     
     def atualizar_status(self):
         """Atualiza labels de status."""
@@ -1418,9 +1215,9 @@ class NovelReaderGUI:
             self.progress_capitulo['value'] = progresso_cap
             self.lbl_progress.config(text=f"{progresso_cap:.0f}%")
         
-        # Atualizar tempo estimado
+        # Atualizar tempo estimado (considerando a velocidade atual)
         if self.narrando and total > 0:
-            palavras_por_min = 150
+            palavras_por_min = 150 * max(0.5, self.velocidade_mult)
             texto_restante = ' '.join(self.conteudo_capitulo[self.paragrafo_atual-1:])
             palavras_restantes = len(texto_restante.split())
             minutos_estimados = palavras_restantes / palavras_por_min
@@ -1442,23 +1239,62 @@ class NovelReaderGUI:
                                     bg=TemaEscuro.BG_TERCIARIO,
                                     fg=TemaEscuro.TEXT_SECONDARY)
     
-    def precarregar_proximo_paragrafo(self):
-        """Solicita pré-carregamento do próximo parágrafo."""
+    JANELA_PREFETCH = 4  # quantos parágrafos à frente manter em buffer
+
+    def _conteudo_de(self, numero):
+        """Retorna o conteúdo de um capítulo, usando o cache de prefetch."""
+        if numero in self._cache_prox_capitulo:
+            return self._cache_prox_capitulo[numero]
+        cap = self.leitor.carregar_capitulo(numero)
+        conteudo = cap['conteudo'] if cap else None
+        if conteudo is not None:
+            self._cache_prox_capitulo[numero] = conteudo
+            # manter o cache pequeno
+            if len(self._cache_prox_capitulo) > 3:
+                for k in list(self._cache_prox_capitulo)[:-3]:
+                    self._cache_prox_capitulo.pop(k, None)
+        return conteudo
+
+    def _prefetch_janela(self):
+        """Pré-carrega uma janela de parágrafos à frente (e o início do próximo
+        capítulo quando o fim se aproxima), sem limpar o cache."""
         if not self.engine or not self.conteudo_capitulo:
             return
-        
-        # Próximo parágrafo
-        proximo_idx = self.paragrafo_atual  # paragrafo_atual é 1-based
-        if 0 <= proximo_idx < len(self.conteudo_capitulo):
-            texto_proximo = self.conteudo_capitulo[proximo_idx]
-            self.engine.solicitar_precarregamento(texto_proximo)
-    
+        total = len(self.conteudo_capitulo)
+        janela = []
+        # próximos N parágrafos do capítulo atual (paragrafo_atual é 1-based)
+        for idx in range(self.paragrafo_atual - 1, min(total, self.paragrafo_atual - 1 + self.JANELA_PREFETCH)):
+            if 0 <= idx < total:
+                janela.append(self.conteudo_capitulo[idx])
+
+        # se restam poucos parágrafos, buscar o próximo capítulo em background
+        restantes = total - self.paragrafo_atual
+        if restantes <= 2:
+            prox = self.capitulo_atual + 1
+            if self.capitulos_disponiveis and prox <= max(self.capitulos_disponiveis):
+                threading.Thread(target=self._prefetch_capitulo, args=(prox,), daemon=True).start()
+                conteudo_prox = self._cache_prox_capitulo.get(prox)
+                if conteudo_prox:
+                    janela.extend(conteudo_prox[:2])
+
+        self.engine.solicitar_precarregamento_lote(janela)
+
+    def _prefetch_capitulo(self, numero):
+        """Carrega o conteúdo de um capítulo em background (sem trocar o atual)."""
+        try:
+            self._conteudo_de(numero)
+        except Exception as e:
+            print(f"⚠️ Falha ao pré-carregar capítulo {numero}: {e}")
+
     def carregar_capitulo(self, numero):
-        """Carrega um capítulo."""
-        capitulo = self.leitor.carregar_capitulo(numero)
-        if capitulo:
-            self.conteudo_capitulo = capitulo['conteudo']
+        """Carrega um capítulo (reaproveitando o prefetch quando disponível)."""
+        conteudo = self._conteudo_de(numero)
+        if conteudo is not None:
+            mudou = (numero != getattr(self, 'capitulo_atual', None))
+            self.conteudo_capitulo = conteudo
             self.capitulo_atual = numero
+            if mudou:
+                self._cap_renderizado = None  # forçar re-render no modo leitura
             self.spin_capitulo.set(str(numero))
             self.spin_paragrafo.config(to=len(self.conteudo_capitulo))
             return True
@@ -1476,12 +1312,12 @@ class NovelReaderGUI:
                 self.narrando = True
                 self.pausado = False
                 self.tempo_inicio_narracao = time.time()
-                self.btn_play_pause.config(text="⏸️  PAUSAR")
-                
+                self.btn_play_pause.config(text="⏸️")
+
                 # Iniciar thread de narração
                 self.thread_narracao = threading.Thread(target=self.loop_narracao, daemon=True)
                 self.thread_narracao.start()
-                
+
                 # Iniciar thread de atualização de tempo
                 threading.Thread(target=self.atualizar_tempo, daemon=True).start()
             else:
@@ -1490,9 +1326,9 @@ class NovelReaderGUI:
             # Pausar/despausar
             self.pausado = not self.pausado
             if self.pausado:
-                self.btn_play_pause.config(text="▶️  CONTINUAR")
+                self.btn_play_pause.config(text="▶️")
             else:
-                self.btn_play_pause.config(text="⏸️  PAUSAR")
+                self.btn_play_pause.config(text="⏸️")
             self.atualizar_status()
     
     def atualizar_tempo(self):
@@ -1519,26 +1355,32 @@ class NovelReaderGUI:
             self.engine = EngineNarracaoSimples(voz, self.musica.canal_narrador)
         
         self.engine.set_volume(self.volume_narracao.get() / 100)
-        self.engine.set_velocidade(int(self.velocidade_narracao.get()))
-        
-        # Pré-carregar apenas o primeiro parágrafo
-        print("🔄 Pré-carregando parágrafo inicial...")
-        if 1 <= self.paragrafo_atual <= len(self.conteudo_capitulo):
-            self.engine.solicitar_precarregamento(self.conteudo_capitulo[self.paragrafo_atual - 1])
-        time.sleep(0.5)  # Aguardar pré-carregamento do primeiro
+        self.engine.set_velocidade(self.velocidade_mult)
+
+        # Pré-carregar a janela inicial de parágrafos
+        print("🔄 Pré-carregando buffer inicial...")
+        self._prefetch_janela()
+        time.sleep(0.4)  # dar um head start ao buffer
         print("✓ Pronto para narrar")
-        
+
         while self.narrando:
+            # Sinal de "pular para parágrafo" vindo do clique no texto
+            if self.pular_para is not None:
+                alvo = self.pular_para
+                self.pular_para = None
+                if 1 <= alvo <= len(self.conteudo_capitulo):
+                    self.paragrafo_atual = alvo
+
             # Verificar se terminou o capítulo
             if self.paragrafo_atual > len(self.conteudo_capitulo):
-                # Ir para próximo capítulo automaticamente
                 proximo_cap = self.capitulo_atual + 1
-                if proximo_cap <= max(self.capitulos_disponiveis):
-                    print(f"📖 Capítulo {self.capitulo_atual} concluído! Indo para capítulo {proximo_cap}...")
+                if self.capitulos_disponiveis and proximo_cap <= max(self.capitulos_disponiveis):
+                    print(f"📖 Capítulo {self.capitulo_atual} concluído! Indo para {proximo_cap}...")
                     if self.carregar_capitulo(proximo_cap):
                         self.paragrafo_atual = 1
                         self.root.after(0, lambda: self.spin_capitulo.set(str(self.capitulo_atual)))
                         self.root.after(0, lambda: self.spin_paragrafo.set(str(self.paragrafo_atual)))
+                        self.root.after(0, self.atualizar_display_modo_leitura)
                         continue
                     else:
                         print("❌ Erro ao carregar próximo capítulo")
@@ -1546,32 +1388,31 @@ class NovelReaderGUI:
                 else:
                     print("✅ Última página da novel! Narração concluída.")
                     break
-            
+
             if not self.narrando:
                 break
-            
-            # Parágrafo atual
+
             paragrafo = self.conteudo_capitulo[self.paragrafo_atual - 1]
-            
+
             # Atualizar UI
             self.root.after(0, self.atualizar_display, paragrafo)
             self.root.after(0, self.atualizar_status)
-            
-            # ANTES de narrar, solicitar pré-carregamento do próximo
-            self.precarregar_proximo_paragrafo()
-            
+
+            # Manter o buffer cheio à frente
+            self._prefetch_janela()
+
             # Narrar com callback para verificar pausa (instantâneo com cache)
             self.engine.narrar(paragrafo, callback_pausado=lambda: self.pausado)
-            
-            # Próximo parágrafo (só se não pausou)
-            if not self.pausado and self.narrando:
+
+            # Avançar (só se não pausou nem pediu para pular)
+            if not self.pausado and self.narrando and self.pular_para is None:
                 self.paragrafo_atual += 1
                 self.root.after(0, lambda p=self.paragrafo_atual: self.spin_paragrafo.set(str(p)))
-        
+
         # Atualizar UI ao finalizar
         self.narrando = False
         self.pausado = False
-        self.root.after(0, lambda: self.btn_play_pause.config(text="▶️ Iniciar Narração"))
+        self.root.after(0, lambda: self.btn_play_pause.config(text="▶️"))
         self.root.after(0, self.atualizar_status)
     
     def parar_narracao_completa(self):
@@ -1584,7 +1425,7 @@ class NovelReaderGUI:
             self.pausado = False
             if self.engine:
                 self.engine.parar()
-            self.btn_play_pause.config(text="▶️ Iniciar Narração")
+            self.btn_play_pause.config(text="▶️")
             self.atualizar_status()
     
     def reiniciar_capitulo(self):
@@ -1673,26 +1514,33 @@ class NovelReaderGUI:
             print(f"Erro ao ajustar volume música: {e}")
     
     def ajustar_velocidade_narracao(self, valor):
-        """Ajusta velocidade da narração."""
+        """Ajusta a velocidade (multiplicador direto de 0.5× a 3.0×)."""
         try:
-            vel = float(valor)
-            # Converter de porcentagem para multiplicador
-            # -50 = 0.5x, 0 = 1.0x, 50 = 1.5x, 100 = 2.0x
-            multiplicador = 1.0 + (vel / 100.0)
+            mult = max(0.5, min(3.0, float(valor)))
+            self.velocidade_mult = mult
             if hasattr(self, 'lbl_velocidade'):
-                self.lbl_velocidade.config(text=f"{multiplicador:.2f}×")
+                self.lbl_velocidade.config(text=f"{mult:.2f}×")
+            self._destacar_chip_velocidade(mult)
             if self.engine:
-                self.engine.set_velocidade(int(vel))
+                self.engine.set_velocidade(mult)
         except Exception as e:
             print(f"Erro ao ajustar velocidade narração: {e}")
-    
+
     def definir_velocidade_fixa(self, valor):
-        """Define uma velocidade fixa pré-determinada."""
+        """Define uma velocidade fixa a partir dos chips."""
         try:
-            self.velocidade_narracao.set(valor)
+            self.velocidade_narracao.set(valor)  # dispara ajustar_velocidade_narracao
             self.ajustar_velocidade_narracao(valor)
         except Exception as e:
             print(f"Erro ao definir velocidade fixa: {e}")
+
+    def _destacar_chip_velocidade(self, mult):
+        """Realça o chip de velocidade correspondente ao valor atual."""
+        botoes = getattr(self, 'botoes_velocidade', None)
+        if not botoes:
+            return
+        for val, btn in botoes.items():
+            btn.configure(style='Accent.TButton' if abs(val - mult) < 0.01 else 'TButton')
     
     def musica_normal(self):
         """Ativa música de fundo."""
@@ -1712,11 +1560,9 @@ class NovelReaderGUI:
             if os.path.exists(self.arquivo_progresso):
                 with open(self.arquivo_progresso, 'r', encoding='utf-8') as f:
                     dados = json.load(f)
-                    self.capitulo_atual = dados.get('capitulo', 961)
-                    self.paragrafo_atual = dados.get('paragrafo', 1)
-                    self.spin_capitulo.set(str(self.capitulo_atual))
-                    self.spin_paragrafo.set(str(self.paragrafo_atual))
-                    
+                    cap = dados.get('capitulo', 961)
+                    par = dados.get('paragrafo', 1)
+
                     # Carregar preferências
                     if 'voz' in dados:
                         self.combo_voz.set(dados['voz'])
@@ -1724,7 +1570,20 @@ class NovelReaderGUI:
                         self.volume_narracao.set(dados['volume_narracao'])
                     if 'volume_musica' in dados:
                         self.volume_musica.set(dados['volume_musica'])
-                    
+                    # Velocidade: aceitar apenas o novo formato (multiplicador 0.5–3.0)
+                    vel = dados.get('velocidade')
+                    if isinstance(vel, (int, float)) and 0.5 <= vel <= 3.0:
+                        self.definir_velocidade_fixa(float(vel))
+
+                    # Carregar o capítulo salvo para exibir de imediato
+                    if self.carregar_capitulo(cap):
+                        self.paragrafo_atual = min(max(1, par), len(self.conteudo_capitulo))
+                    else:
+                        self.capitulo_atual = cap
+                        self.paragrafo_atual = par
+                    self.spin_capitulo.set(str(self.capitulo_atual))
+                    self.spin_paragrafo.set(str(self.paragrafo_atual))
+
                     print(f"✓ Progresso carregado: Cap {self.capitulo_atual}, Par {self.paragrafo_atual}")
         except Exception as e:
             print(f"Erro ao carregar progresso: {e}")
@@ -1848,16 +1707,15 @@ class NovelReaderGUI:
         )
     
     def toggle_modo_leitura(self):
-        """Alterna entre modo normal e modo leitura focado."""
+        """Alterna entre ler o capítulo inteiro e focar só no parágrafo atual."""
         self.modo_leitura = not self.modo_leitura
-        
+
         if self.modo_leitura:
-            # Entrar no modo leitura
-            self.btn_modo_leitura.config(text="📖 Modo Normal")
+            self.btn_modo_leitura.config(text="Ver só o parágrafo atual")
+            self._cap_renderizado = None
             self.atualizar_display_modo_leitura()
         else:
-            # Voltar ao modo normal
-            self.btn_modo_leitura.config(text="📖 Modo Leitura")
+            self.btn_modo_leitura.config(text="Ver capítulo inteiro")
             if self.conteudo_capitulo and self.paragrafo_atual <= len(self.conteudo_capitulo):
                 texto = self.conteudo_capitulo[self.paragrafo_atual - 1]
                 self.text_paragrafo.config(state='normal')
@@ -1865,84 +1723,51 @@ class NovelReaderGUI:
                 self.text_paragrafo.insert('1.0', texto)
                 self.text_paragrafo.config(state='disabled')
                 self.aplicar_estilo_texto()
-    
-    def mostrar_capitulo_completo(self):
-        """Mostra o capítulo completo no modo leitura."""
-        if not self.conteudo_capitulo:
-            return
-        
-        self.text_paragrafo.config(state='normal')
-        self.text_paragrafo.delete('1.0', tk.END)
-        
-        for i, paragrafo in enumerate(self.conteudo_capitulo, 1):
-            # Adicionar número do parágrafo
-            self.text_paragrafo.insert(tk.END, f"[{i}] ", 'paragrafo_num')
-            self.text_paragrafo.insert(tk.END, paragrafo + "\n\n")
-        
-        # Configurar tag para números de parágrafo
-        self.text_paragrafo.tag_config('paragrafo_num', 
-                                       foreground=TemaEscuro.ACCENT_SECONDARY,
-                                       font=('Segoe UI', 9, 'bold'))
-        
-        # Scroll para o parágrafo atual
-        self.text_paragrafo.see(f"{self.paragrafo_atual}.0")
-        self.text_paragrafo.config(state='disabled')
-    
+
+    def _paragrafo_do_clique(self, index):
+        """Descobre o número do parágrafo a partir do índice clicado no texto."""
+        tags = self.text_paragrafo.tag_names(index)
+        # Clique no texto do parágrafo
+        for tag in tags:
+            if tag.startswith('paragrafo_') and tag != 'paragrafo_num':
+                try:
+                    return int(tag.split('_')[1])
+                except (IndexError, ValueError):
+                    pass
+        # Clique no número "[N]"
+        linha = int(index.split('.')[0])
+        conteudo_linha = self.text_paragrafo.get(f"{linha}.0", f"{linha}.end")
+        import re
+        match = re.match(r'\s*\[(\d+)\]', conteudo_linha)
+        if match:
+            return int(match.group(1))
+        return None
+
     def on_texto_clicado(self, event):
-        """Callback quando usuário clica no texto."""
+        """Clique no texto: pula para o parágrafo e narra a partir dali (sem jank)."""
         try:
-            # Pegar posição do clique
             index = self.text_paragrafo.index(f"@{event.x},{event.y}")
-            
+
             if self.modo_leitura:
-                # No modo leitura, verificar qual tag (parágrafo) foi clicada
-                tags = self.text_paragrafo.tag_names(index)
-                
-                paragrafo_clicado = None
-                
-                # Verificar se clicou no número do parágrafo
-                if 'paragrafo_num' in tags:
-                    # Extrair o número do parágrafo do texto
-                    linha = int(index.split('.')[0])
-                    conteudo_linha = self.text_paragrafo.get(f"{linha}.0", f"{linha}.end")
-                    import re
-                    match = re.match(r'\[(\d+)\]', conteudo_linha)
-                    if match:
-                        paragrafo_clicado = int(match.group(1))
-                else:
-                    # Verificar tags de parágrafo
-                    for tag in tags:
-                        if tag.startswith('paragrafo_'):
-                            try:
-                                paragrafo_clicado = int(tag.split('_')[1])
-                                break
-                            except (IndexError, ValueError):
-                                pass
-                
-                if paragrafo_clicado and 1 <= paragrafo_clicado <= len(self.conteudo_capitulo):
-                    # Salvar estado de narração
-                    estava_narrando = self.narrando
-                    
-                    # Parar narração atual se estiver rodando
-                    if self.narrando:
-                        self.parar_narracao_completa()
-                    
-                    # Atualizar parágrafo atual
-                    self.paragrafo_atual = paragrafo_clicado
-                    self.spin_paragrafo.delete(0, tk.END)
-                    self.spin_paragrafo.insert(0, str(paragrafo_clicado))
-                    
-                    # Atualizar display com novo highlight
-                    self.atualizar_display_modo_leitura()
-                    
-                    # Se estava narrando, continuar narrando do novo parágrafo
-                    if estava_narrando:
-                        self.narrando = False  # Resetar para toggle funcionar
-                        self.toggle_narracao()
-            else:
-                # No modo normal, reiniciar narração do parágrafo atual
+                paragrafo_clicado = self._paragrafo_do_clique(index)
+                if not paragrafo_clicado or not (1 <= paragrafo_clicado <= len(self.conteudo_capitulo)):
+                    return
+
+                self.spin_paragrafo.set(str(paragrafo_clicado))
+
                 if self.narrando:
-                    self.parar_narracao_completa()
+                    # Sinaliza o loop para saltar e corta o clipe atual (sem parar tudo)
+                    self.pular_para = paragrafo_clicado
+                    self._mover_highlight(paragrafo_clicado)
+                    if self.engine:
+                        self.engine.parar()
+                else:
+                    # Parado: começa a narrar a partir do parágrafo clicado
+                    self.paragrafo_atual = paragrafo_clicado
+                    self._mover_highlight(paragrafo_clicado)
+                    self.toggle_narracao()
+            else:
+                # Modo parágrafo único: clique alterna play/pause
                 self.toggle_narracao()
         except Exception as e:
             print(f"Erro ao clicar no texto: {e}")
@@ -2522,81 +2347,6 @@ class ConfiguracoesWindow:
         ttk.Label(reset_frame, text="Remove todo o progresso (irreversível)",
                  font=('Segoe UI', 9),
                  foreground=TemaEscuro.ACCENT_DANGER).pack(side='left')
-    
-    def criar_aba_novels(self):
-        """Cria aba de gerenciamento de novels."""
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="📚 Novels")
-        
-        main_frame = ttk.Frame(frame, padding=20)
-        main_frame.pack(fill='both', expand=True)
-        
-        # Título
-        title_frame = ttk.Frame(main_frame)
-        title_frame.pack(fill='x', pady=(0, 15))
-        ttk.Label(title_frame, text="Gerenciar Novels", 
-                 font=('Segoe UI', 14, 'bold'),
-                 foreground=TemaEscuro.TEXT_PRIMARY).pack(anchor='w')
-        ttk.Label(title_frame, text="Adicione e gerencie suas novels para narração",
-                 font=('Segoe UI', 9),
-                 foreground=TemaEscuro.TEXT_SECONDARY).pack(anchor='w', pady=(3, 0))
-        
-        ttk.Separator(main_frame, orient='horizontal').pack(fill='x', pady=(0, 15))
-        
-        # Novels disponíveis
-        list_card = ttk.LabelFrame(main_frame, text="📖 Biblioteca de Novels", padding=12)
-        list_card.pack(fill='both', expand=True, pady=(0, 12))
-        
-        list_container = ttk.Frame(list_card)
-        list_container.pack(fill='both', expand=True, pady=(0, 10))
-        
-        scrollbar = ttk.Scrollbar(list_container)
-        scrollbar.pack(side='right', fill='y')
-        
-        self.listbox_novels = tk.Listbox(list_container, yscrollcommand=scrollbar.set,
-                                         bg=TemaEscuro.BG_CARD,
-                                         fg=TemaEscuro.TEXT_PRIMARY,
-                                         selectbackground=TemaEscuro.ACCENT_PRIMARY,
-                                         selectforeground=TemaEscuro.BG_PRINCIPAL,
-                                         font=('Segoe UI', 10),
-                                         relief='flat',
-                                         highlightthickness=1,
-                                         highlightbackground=TemaEscuro.BORDER,
-                                         activestyle='none')
-        self.listbox_novels.pack(side='left', fill='both', expand=True)
-        scrollbar.config(command=self.listbox_novels.yview)
-        
-        # Botões de ação
-        btn_frame = ttk.Frame(list_card)
-        btn_frame.pack(fill='x')
-        
-        ttk.Button(btn_frame, text="➕ Adicionar Novel", 
-                  command=self.adicionar_novel,
-                  width=20).pack(side='left', padx=(0, 5))
-        ttk.Button(btn_frame, text="🔄 Atualizar Lista",
-                  command=self.atualizar_lista_novels,
-                  width=18).pack(side='left')
-        
-        # Requisitos de estrutura
-        req_card = ttk.LabelFrame(main_frame, text="ℹ️ Estrutura Necessária", padding=12)
-        req_card.pack(fill='x')
-        
-        estrutura_text = (
-            "Para adicionar uma novel, a pasta deve conter:\n\n"
-            "├─ metadata.json     (informações da novel)\n"
-            "└─ capitulos/         (pasta com os capítulos)\n"
-            "    ├─ cap_0001.json\n"
-            "    ├─ cap_0002.json\n"
-            "    └─ ..."
-        )
-        
-        ttk.Label(req_card, text=estrutura_text,
-                 font=('Consolas', 9),
-                 foreground=TemaEscuro.TEXT_SECONDARY,
-                 justify='left').pack(anchor='w')
-        
-        # Carregar lista de novels
-        self.atualizar_lista_novels()
     
     # Métodos de música
     def selecionar_musica(self):
