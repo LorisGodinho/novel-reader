@@ -1095,10 +1095,14 @@ class NovelReaderGUI:
             novo_cap = int(self.spin_capitulo.get())
             if novo_cap != self.capitulo_atual:
                 self.parar_narracao_completa()
-                self.carregar_capitulo(novo_cap)
-                self.paragrafo_atual = 1
-                self.spin_paragrafo.set('1')
-                self.atualizar_status()
+                if self.carregar_capitulo(novo_cap):
+                    self.paragrafo_atual = 1
+                    self.spin_paragrafo.set('1')
+                    if self.modo_leitura:
+                        self.atualizar_display_modo_leitura()
+                    elif self.conteudo_capitulo:
+                        self.atualizar_display(self.conteudo_capitulo[0])
+                    self.atualizar_status()
         except ValueError:
             pass
     
@@ -1141,8 +1145,8 @@ class NovelReaderGUI:
     def atualizar_display(self, texto):
         """Atualiza o texto do parágrafo atual."""
         if self.modo_leitura:
-            # No modo leitura só movemos o highlight (sem reconstruir o widget)
-            self._mover_highlight(self.paragrafo_atual)
+            # Re-renderiza se o capítulo mudou; senão só move o highlight (barato)
+            self.atualizar_display_modo_leitura()
         else:
             # Modo normal: mostrar apenas o parágrafo atual
             self.text_paragrafo.config(state='normal')
