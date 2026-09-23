@@ -440,11 +440,13 @@ def menu_principal():
         
         elif escolha == '3':
             print("\n🎤 Vozes disponíveis:")
-            vozes = ['Francisca', 'Thalita', 'Antonio', 'Raquel', 'Duarte']
+            vozes = ['Francisca', 'Thalita', 'Antonio', 'Vivienne', 'Remy', 'Raquel', 'Duarte']
             descricoes = {
                 'Francisca': 'Feminino BR - Calma',
                 'Thalita': 'Feminino BR - Multilíngue',
                 'Antonio': 'Masculino BR',
+                'Vivienne': 'Feminino - Multilíngue',
+                'Remy': 'Masculino - Multilíngue',
                 'Raquel': 'Feminino PT',
                 'Duarte': 'Masculino PT'
             }
