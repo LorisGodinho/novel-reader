@@ -7,7 +7,11 @@ beautifulsoup4>=4.14.0
 lxml>=6.0.0
 
 # TTS e Áudio (Sistema Gratuito)
+edge-tts>=7.2.0       # Microsoft Edge TTS (online, grátis)
 gtts>=2.5.0           # Google TTS (grátis, ilimitado)
+piper-tts>=1.8.0      # Vozes offline pt-BR (Faber, Cadu, Jeff) - CPU
+kokoro-onnx>=0.6.0    # Vozes offline pt-BR (Dora, Alex, Santa) - CPU
+# Chatterbox (clonagem na GPU) fica num ambiente separado: instalar_chatterbox.ps1
 pygame>=2.6.0         # Reprodução de áudio
 pydub>=0.25.0         # Manipulação de áudio (velocidade/volume)
 
