@@ -13,7 +13,7 @@ Sistema avançado de leitura e narração de novels com interface gráfica moder
 
 ### 🎙️ Sistema de Narração Avançado
 - **TTS Neural de Alta Qualidade** usando Microsoft Edge (gratuito)
-- **5 Vozes em Português**: Francisca, Thalita, Antonio, Donato, Brenda
+- **7 Vozes em Português**: Francisca, Thalita, Antonio, Vivienne, Remy (BR) + Raquel, Duarte (PT)
 - **Controles de Velocidade Flexíveis**:
   - 5 velocidades fixas: 0.5×, 1×, 1.25×, 1.5×, 2×
   - Barra de ajuste fino para controle preciso
@@ -82,7 +82,7 @@ python novel_reader_gui.py
 - **Volume Narração** - Slider de 0-100%
 - **Volume Música** - Slider de 0-100%
 - **Velocidade** - Botões: 0.5×, 1×, 1.25×, 1.5×, 2×, 3× + ajuste fino
-- **Seleção de Voz** - 5 vozes em português
+- **Seleção de Voz** - 7 vozes em português
 - **Música** - Normal (🎵) / Combate (⚔️) / Mutar (🔇)
 
 ### 🎯 Recursos Especiais
@@ -160,10 +160,12 @@ lxml==5.3.0              # Parser XML/HTML
 | Nome | Voz Neural | Descrição |
 |------|------------|-----------|
 | Francisca | pt-BR-FranciscaNeural | Feminino BR - Calma e clara (padrão) |
-| Thalita | pt-BR-ThalitaNeural | Feminino BR - Jovem e vibrante |
-| Brenda | pt-BR-BrendaNeural | Feminino BR - Expressiva e dramática |
+| Thalita | pt-BR-ThalitaMultilingualNeural | Feminino BR - Multilíngue |
 | Antonio | pt-BR-AntonioNeural | Masculino BR - Natural e madura |
-| Donato | pt-BR-DonatoNeural | Masculino BR - Jovem e energética |
+| Vivienne | fr-FR-VivienneMultilingualNeural | Feminino - Multilíngue (lê em PT-BR) |
+| Remy | fr-FR-RemyMultilingualNeural | Masculino - Multilíngue (lê em PT-BR) |
+| Raquel | pt-PT-RaquelNeural | Feminino PT |
+| Duarte | pt-PT-DuarteNeural | Masculino PT |
 
 ## ⚙️ Configurações Técnicas
 

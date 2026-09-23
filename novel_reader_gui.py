@@ -322,6 +322,9 @@ class EngineNarracaoSimples:
         'Francisca': 'pt-BR-FranciscaNeural',
         'Thalita': 'pt-BR-ThalitaMultilingualNeural',
         'Antonio': 'pt-BR-AntonioNeural',
+        # Multilíngues: leem texto em português com sotaque BR
+        'Vivienne': 'fr-FR-VivienneMultilingualNeural',
+        'Remy': 'fr-FR-RemyMultilingualNeural',
         'Raquel': 'pt-PT-RaquelNeural',
         'Duarte': 'pt-PT-DuarteNeural'
     }

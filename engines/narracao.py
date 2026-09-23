@@ -20,6 +20,8 @@ class EngineNarracao:
         'Francisca': 'pt-BR-FranciscaNeural',      # Feminino BR
         'Thalita': 'pt-BR-ThalitaMultilingualNeural',  # Feminino BR Multilíngue
         'Antonio': 'pt-BR-AntonioNeural',          # Masculino BR
+        'Vivienne': 'fr-FR-VivienneMultilingualNeural',  # Feminino Multilíngue (lê PT-BR)
+        'Remy': 'fr-FR-RemyMultilingualNeural',    # Masculino Multilíngue (lê PT-BR)
         'Raquel': 'pt-PT-RaquelNeural',            # Feminino PT
         'Duarte': 'pt-PT-DuarteNeural'             # Masculino PT
     }
