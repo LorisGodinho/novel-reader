@@ -30,6 +30,9 @@ novels/*/capitulos/*.json
 novels/*/volumes/
 
 # Modelos de voz (podem ser grandes)
+modelos_tts/
+.venv/
+.venv-chatterbox/
 narradores/*/
 vozes_personagens/*/
 

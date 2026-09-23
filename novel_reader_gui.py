@@ -8,9 +8,7 @@ import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import threading
-import asyncio
 import pygame
-import edge_tts
 import tempfile
 import time
 import json
@@ -31,6 +29,7 @@ def obter_caminho_base():
 base_path = obter_caminho_base()
 sys.path.insert(0, os.path.join(base_path, 'src'))
 from leitor import LeitorNovel
+from motores_tts import catalogo_vozes, Sintetizador
 
 
 # ===== TEMA ESCURO MODERNO =====
@@ -318,30 +317,19 @@ class MusicaFundo:
 class EngineNarracaoSimples:
     """Engine simplificado sem emoções com sistema de pré-carregamento otimizado."""
     
-    VOZES = {
-        'Francisca': 'pt-BR-FranciscaNeural',
-        'Thalita': 'pt-BR-ThalitaMultilingualNeural',
-        'Antonio': 'pt-BR-AntonioNeural',
-        # Multilíngues: leem texto em português com sotaque BR
-        'Vivienne': 'fr-FR-VivienneMultilingualNeural',
-        'Remy': 'fr-FR-RemyMultilingualNeural',
-        'Raquel': 'pt-PT-RaquelNeural',
-        'Duarte': 'pt-PT-DuarteNeural'
-    }
-    
-    # Edge TTS soa natural até ~1.5×; acima disso usamos ffmpeg (atempo)
-    # para acelerar de verdade preservando o tom da voz.
-    RATE_NATIVO_MAX = 1.5
+    # Catálogo de todas as vozes (Edge online + Piper/Kokoro offline + clones Chatterbox)
+    VOZES = catalogo_vozes()
+    SEM_VOZ_DIALOGO = 'Mesma do narrador'
 
     def __init__(self, voz='Francisca', canal=None):
-        self.voz_atual = self.VOZES.get(voz, self.VOZES['Francisca'])
-        self.temp_dir = tempfile.gettempdir()
+        self.voz_atual = voz if voz in self.VOZES else 'Francisca'
+        self.voz_dialogo = None  # None = diálogos com a mesma voz do narrador
+        self.sintetizador = Sintetizador(tempfile.gettempdir())
         self.canal = canal if canal else pygame.mixer.Channel(1)
         self.volume = 1.0
         self.multiplicador = 1.0  # 0.5× a 3.0×
         self.pausado = False
         self.som_atual = None
-        self.ffmpeg = self._localizar_ffmpeg()
 
         # Sistema de cache otimizado com OrderedDict para LRU
         self.cache_sounds = OrderedDict()  # {chave: pygame.Sound}
@@ -355,49 +343,9 @@ class EngineNarracaoSimples:
         self.precarregamento_ativo = False
         self._iniciar_thread_precarregamento()
 
-    # ----- Helpers de velocidade / ffmpeg -----
-    def _localizar_ffmpeg(self):
-        """Retorna o caminho do ffmpeg.exe empacotado, ou 'ffmpeg' do PATH."""
-        candidato = os.path.join(obter_caminho_base(), 'ffmpeg.exe')
-        if os.path.exists(candidato):
-            return candidato
-        return shutil.which('ffmpeg') or 'ffmpeg'
-
     def _chave(self, texto: str) -> str:
-        """Chave de cache única por texto + velocidade + voz."""
-        return f"{hash(texto)}_{self.multiplicador:.2f}_{self.voz_atual}"
-
-    def _decompor_velocidade(self):
-        """Divide o multiplicador entre rate nativo (Edge) e residual (ffmpeg)."""
-        mult = max(0.5, min(3.0, self.multiplicador))
-        nativo = min(mult, self.RATE_NATIVO_MAX)
-        edge_rate_pct = int(round((nativo - 1.0) * 100))
-        residual = mult / nativo  # 1.0 .. 2.0
-        return edge_rate_pct, residual
-
-    def _aplicar_ffmpeg(self, entrada: str, residual: float, chave: str) -> str:
-        """Acelera o áudio via ffmpeg atempo (tom preservado). Fallback: retorna entrada."""
-        if residual <= 1.001:
-            return entrada
-        saida = os.path.join(self.temp_dir, f'tts_x_{abs(hash(chave))}.mp3')
-        if os.path.exists(saida):
-            return saida
-        try:
-            flags = 0
-            if os.name == 'nt':
-                flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-            subprocess.run(
-                [self.ffmpeg, '-y', '-i', entrada,
-                 '-filter:a', f'atempo={residual:.4f}',
-                 '-vn', saida],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=flags, timeout=30
-            )
-            if os.path.exists(saida) and os.path.getsize(saida) > 0:
-                return saida
-        except Exception as e:
-            print(f"⚠️ ffmpeg indisponível ({e}); usando velocidade nativa (teto ~2×)")
-        return entrada
+        """Chave de cache única por texto + velocidade + vozes."""
+        return f"{hash(texto)}_{self.multiplicador:.2f}_{self.voz_atual}_{self.voz_dialogo}"
 
     def _iniciar_thread_precarregamento(self):
         """Inicia thread dedicada para pré-carregamento."""
@@ -421,7 +369,7 @@ class EngineNarracaoSimples:
                     self.desejados.discard(chave)
                     continue
 
-                arquivo = asyncio.run(self._gerar_audio_async(texto))
+                arquivo = self._gerar_audio(texto)
                 som = pygame.mixer.Sound(arquivo)
 
                 with self._lock:
@@ -435,18 +383,9 @@ class EngineNarracaoSimples:
                 if not isinstance(e, TimeoutError):
                     pass  # Timeout é normal quando não há nada na fila
 
-    async def _gerar_audio_async(self, texto: str):
-        """Gera áudio via Edge TTS e aplica ffmpeg quando > 1.5×."""
-        chave = self._chave(texto)
-        edge_rate_pct, residual = self._decompor_velocidade()
-        rate = f"{edge_rate_pct:+d}%"
-        base = os.path.join(self.temp_dir, f'tts_{abs(hash(chave))}_r{edge_rate_pct}.mp3')
-
-        if not os.path.exists(base):
-            communicate = edge_tts.Communicate(texto, self.voz_atual, rate=rate)
-            await communicate.save(base)
-
-        return self._aplicar_ffmpeg(base, residual, chave)
+    def _gerar_audio(self, texto: str) -> str:
+        """Gera o áudio do parágrafo (motor da voz escolhida, diálogos e velocidade)."""
+        return self.sintetizador.gerar(texto, self.voz_atual, self.voz_dialogo, self.multiplicador)
 
     def set_velocidade(self, multiplicador):
         """Define a velocidade como multiplicador (0.5× a 3.0×)."""
@@ -506,7 +445,7 @@ class EngineNarracaoSimples:
                 print(f"⚡ Usando áudio do cache (transição instantânea)")
             else:
                 print(f"⚠️ Áudio não estava em cache, gerando...")
-                arquivo = asyncio.run(self._gerar_audio_async(texto))
+                arquivo = self._gerar_audio(texto)
                 self.som_atual = pygame.mixer.Sound(arquivo)
                 with self._lock:
                     self.cache_sounds[chave] = self.som_atual
@@ -533,11 +472,19 @@ class EngineNarracaoSimples:
 
     def trocar_voz(self, nova_voz):
         """Troca a voz e limpa o cache."""
-        voz_id = self.VOZES.get(nova_voz, self.VOZES['Francisca'])
-        if voz_id != self.voz_atual:
-            self.voz_atual = voz_id
+        nova_voz = nova_voz if nova_voz in self.VOZES else 'Francisca'
+        if nova_voz != self.voz_atual:
+            self.voz_atual = nova_voz
             self.limpar_cache()
             print(f"🎙️ Voz alterada para: {nova_voz}")
+
+    def trocar_voz_dialogo(self, nova_voz):
+        """Define a voz das falas entre aspas (None/'Mesma do narrador' desliga)."""
+        nova_voz = nova_voz if nova_voz in self.VOZES else None
+        if nova_voz != self.voz_dialogo:
+            self.voz_dialogo = nova_voz
+            self.limpar_cache()
+            print(f"💬 Voz dos diálogos: {nova_voz or self.SEM_VOZ_DIALOGO}")
 
     def parar_precarregamento(self):
         """Para a thread de pré-carregamento."""
@@ -819,6 +766,15 @@ class NovelReaderGUI:
         self.combo_voz.set('Francisca')
         self.combo_voz.pack(fill='x')
         self.combo_voz.bind('<<ComboboxSelected>>', self.on_voz_alterada)
+
+        # Voz dos diálogos (falas entre aspas)
+        secao("💬 Voz dos diálogos")
+        self.combo_voz_dialogo = ttk.Combobox(
+            cont, values=[EngineNarracaoSimples.SEM_VOZ_DIALOGO] + list(EngineNarracaoSimples.VOZES.keys()),
+            state='readonly')
+        self.combo_voz_dialogo.set(EngineNarracaoSimples.SEM_VOZ_DIALOGO)
+        self.combo_voz_dialogo.pack(fill='x')
+        self.combo_voz_dialogo.bind('<<ComboboxSelected>>', self.on_voz_dialogo_alterada)
 
         # Velocidade
         secao("⚡ Velocidade (0.5×–3×)")
@@ -1128,6 +1084,11 @@ class NovelReaderGUI:
             nova_voz = self.combo_voz.get()
             self.engine.trocar_voz(nova_voz)
             print(f"🎙️ Voz alterada para: {nova_voz}")
+
+    def on_voz_dialogo_alterada(self, event=None):
+        """Callback quando a voz dos diálogos é alterada."""
+        if self.engine:
+            self.engine.trocar_voz_dialogo(self.combo_voz_dialogo.get())
     
     def carregar_capitulos(self):
         """Carrega lista de capítulos disponíveis."""
@@ -1360,6 +1321,7 @@ class NovelReaderGUI:
             self.engine.trocar_voz(voz)
         else:
             self.engine = EngineNarracaoSimples(voz, self.musica.canal_narrador)
+        self.engine.trocar_voz_dialogo(self.combo_voz_dialogo.get())
         
         self.engine.set_volume(self.volume_narracao.get() / 100)
         self.engine.set_velocidade(self.velocidade_mult)
@@ -1571,8 +1533,10 @@ class NovelReaderGUI:
                     par = dados.get('paragrafo', 1)
 
                     # Carregar preferências
-                    if 'voz' in dados:
+                    if dados.get('voz') in EngineNarracaoSimples.VOZES:
                         self.combo_voz.set(dados['voz'])
+                    if dados.get('voz_dialogo') in EngineNarracaoSimples.VOZES:
+                        self.combo_voz_dialogo.set(dados['voz_dialogo'])
                     if 'volume_narracao' in dados:
                         self.volume_narracao.set(dados['volume_narracao'])
                     if 'volume_musica' in dados:
@@ -1603,6 +1567,7 @@ class NovelReaderGUI:
                 'capitulo': self.capitulo_atual,
                 'paragrafo': self.paragrafo_atual,
                 'voz': self.combo_voz.get(),
+                'voz_dialogo': self.combo_voz_dialogo.get(),
                 'volume_narracao': self.volume_narracao.get(),
                 'volume_musica': self.volume_musica.get(),
                 'velocidade': self.velocidade_narracao.get()

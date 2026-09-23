@@ -13,7 +13,9 @@ Sistema avançado de leitura e narração de novels com interface gráfica moder
 
 ### 🎙️ Sistema de Narração Avançado
 - **TTS Neural de Alta Qualidade** usando Microsoft Edge (gratuito)
-- **7 Vozes em Português**: Francisca, Thalita, Antonio, Vivienne, Remy (BR) + Raquel, Duarte (PT)
+- **Vozes em Português**: 7 online (Edge), 6 offline (Piper/Kokoro) e clones na GPU (Chatterbox)
+- **Voz separada para diálogos**: falas entre aspas com outra voz
+- **Reserva offline automática** quando o Edge TTS fica sem conexão
 - **Controles de Velocidade Flexíveis**:
   - 5 velocidades fixas: 0.5×, 1×, 1.25×, 1.5×, 2×
   - Barra de ajuste fino para controle preciso
@@ -82,7 +84,7 @@ python novel_reader_gui.py
 - **Volume Narração** - Slider de 0-100%
 - **Volume Música** - Slider de 0-100%
 - **Velocidade** - Botões: 0.5×, 1×, 1.25×, 1.5×, 2×, 3× + ajuste fino
-- **Seleção de Voz** - 7 vozes em português
+- **Seleção de Voz** - vozes online, offline e clonadas + voz separada para diálogos
 - **Música** - Normal (🎵) / Combate (⚔️) / Mutar (🔇)
 
 ### 🎯 Recursos Especiais
@@ -166,6 +168,32 @@ lxml==5.3.0              # Parser XML/HTML
 | Remy | fr-FR-RemyMultilingualNeural | Masculino - Multilíngue (lê em PT-BR) |
 | Raquel | pt-PT-RaquelNeural | Feminino PT |
 | Duarte | pt-PT-DuarteNeural | Masculino PT |
+
+### Vozes offline (sem internet)
+
+Rodam na CPU; os modelos são baixados para `modelos_tts/` no primeiro uso.
+Se o Edge TTS falhar (sem internet), a narração cai automaticamente para
+Dora (vozes femininas) ou Faber (masculinas).
+
+| Nome | Motor | Descrição |
+|------|-------|-----------|
+| Faber · offline | Piper | Masculino BR - muito rápido |
+| Cadu · offline | Piper | Masculino BR - muito rápido |
+| Jeff · offline | Piper | Masculino BR - muito rápido |
+| Dora · offline | Kokoro | Feminino BR - mais natural, ~3× tempo real |
+| Alex · offline | Kokoro | Masculino BR |
+| Santa · offline | Kokoro | Masculino BR |
+
+### Vozes clonadas na GPU (Chatterbox)
+
+Com placa NVIDIA, rode `instalar_chatterbox.ps1` (~6 GB). Aparecem vozes
+"· clone GPU", clonadas a partir de uma referência gerada automaticamente com
+as vozes acima. Para clonar qualquer voz, coloque um `.wav` de 5–20s em
+`modelos_tts/chatterbox/referencias/<Nome>.wav`.
+
+Numa RTX 5050 o Chatterbox gera em ~tempo real, então funciona melhor como
+**voz dos diálogos** (seletor "💬 Voz dos diálogos"): o narrador fica no Edge
+e só as falas entre aspas usam o clone.
 
 ## ⚙️ Configurações Técnicas
 
