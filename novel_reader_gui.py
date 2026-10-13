@@ -433,9 +433,10 @@ class EngineNarracaoSimples:
             self.fila_precarregamento.put(texto)
 
     def narrar(self, texto: str, callback_pausado=None):
-        """Narra texto simples com suporte a pausa e cache."""
+        """Narra texto simples com suporte a pausa e cache.
+        Retorna a exceção se a síntese falhar (None em caso de sucesso)."""
         if not texto.strip():
-            return
+            return None
 
         try:
             chave = self._chave(texto)
@@ -460,8 +461,10 @@ class EngineNarracaoSimples:
                 elif self.pausado:
                     self.despausar()
                 time.sleep(0.01)  # Reduzir sleep para melhor responsividade
+            return None
         except Exception as e:
             print(f"Erro ao narrar: {e}")
+            return e
 
     def limpar_cache(self):
         """Limpa o cache de áudios."""
@@ -1371,7 +1374,15 @@ class NovelReaderGUI:
             self._prefetch_janela()
 
             # Narrar com callback para verificar pausa (instantâneo com cache)
-            self.engine.narrar(paragrafo, callback_pausado=lambda: self.pausado)
+            erro = self.engine.narrar(paragrafo, callback_pausado=lambda: self.pausado)
+            if erro is not None:
+                # Não avançar: parar no parágrafo atual em vez de varrer o capítulo em loop
+                print("⏹️ Narração interrompida por falha na síntese de voz")
+                self.root.after(0, lambda e=erro: messagebox.showerror(
+                    "Erro na voz",
+                    f"Não foi possível gerar o áudio.\n\n{e}\n\n"
+                    "Escolha outra voz ou verifique a conexão/dependências."))
+                break
 
             # Avançar (só se não pausou nem pediu para pular)
             if not self.pausado and self.narrando and self.pular_para is None:

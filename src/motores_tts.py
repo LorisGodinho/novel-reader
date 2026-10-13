@@ -152,14 +152,42 @@ def _temporario(saida: str) -> str:
 class MotorEdge:
     RATE_MAX = 1.5  # soa natural até ~1.5×
 
+    # Em out/2026 a Microsoft passou a recusar (403) o host antigo em várias regiões,
+    # inclusive o Brasil; o novo aceita o mesmo token (rany2/edge-tts#490, PR #491).
+    # Tenta em ordem e memoriza o que respondeu.
+    ENDPOINTS = (
+        'wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1?Ocp-Apim-Subscription-Key={token}',
+        'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken={token}',
+    )
+
+    def __init__(self):
+        self._atual = 0
+
     def sintetizar(self, texto, voz, velocidade, saida):
+        import aiohttp
         import edge_tts
+        import edge_tts.communicate as comunicacao
+        from edge_tts.constants import TRUSTED_CLIENT_TOKEN
         rate = f"{int(round((velocidade - 1.0) * 100)):+d}%"
         saida += '.mp3'
-        if not os.path.exists(saida):
-            tmp = _temporario(saida)
-            asyncio.run(edge_tts.Communicate(texto, voz.id, rate=rate).save(tmp))
-            os.replace(tmp, saida)
+        if os.path.exists(saida):
+            return saida
+        tmp = _temporario(saida)
+        for tentativa in range(len(self.ENDPOINTS)):
+            indice = (self._atual + tentativa) % len(self.ENDPOINTS)
+            # communicate importa WSS_URL direto, então o patch precisa ser nesse módulo
+            comunicacao.WSS_URL = self.ENDPOINTS[indice].format(token=TRUSTED_CLIENT_TOKEN)
+            try:
+                asyncio.run(edge_tts.Communicate(texto, voz.id, rate=rate).save(tmp))
+            except aiohttp.WSServerHandshakeError as e:
+                if e.status != 403 or tentativa == len(self.ENDPOINTS) - 1:
+                    raise
+                continue
+            if indice != self._atual:
+                self._atual = indice
+                print(f"🌐 Edge TTS: usando endpoint {self.ENDPOINTS[indice].split('/')[2]}")
+            break
+        os.replace(tmp, saida)
         return saida
 
 
@@ -416,8 +444,10 @@ class Sintetizador:
         if reserva and reserva != voz:
             tentativas.append(reserva)
         erro = None
+        falhas = []
         for v in tentativas:
             if v.motor == 'edge' and time.time() < self._edge_off_ate:
+                falhas.append(f"{v.nome}: Edge pausado após falha recente")
                 continue
             motor = MOTORES[v.motor]
             rate_min = getattr(motor, 'RATE_MIN', 0.5)
@@ -433,9 +463,10 @@ class Sintetizador:
                 return arq, mult / nativo
             except Exception as e:
                 erro = e
+                falhas.append(f"{v.nome}: {e}")
                 if v.motor == 'edge' and type(e).__name__ != 'NoAudioReceived':
                     self._edge_off_ate = time.time() + self.PAUSA_EDGE_FALHOU
-        raise RuntimeError(f"Falha ao sintetizar com {voz.nome}: {erro}")
+        raise RuntimeError(f"Falha ao sintetizar com {voz.nome} ({'; '.join(falhas)})")
 
     def gerar(self, texto: str, voz: str, voz_dialogo: str, mult: float) -> str:
         v_narr = self.vozes.get(voz) or self.vozes['Francisca']
